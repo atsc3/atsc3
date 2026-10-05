@@ -11,17 +11,16 @@ WHUT mux, SDRplay RSP1B) and an independent receiver.
 
 | Package | Kind | Purpose |
 |---|---|---|
-| [`atsc3lib/`](atsc3lib/) | Python | Physical-layer demodulation, L1 signalling, data-PLP decoding, and A/331 service discovery / ROUTE / MMTP / media |
+| [`atsc3lib/`](atsc3lib/) | Python + C extensions | Physical-layer demodulation, L1 signalling, data-PLP decoding, and A/331 service discovery / ROUTE / MMTP / media. The dense kernels (normalized-min-sum LDPC and BCH, max-log demapper, frequency-interleaver address generator) are built in as `atsc3lib._bindings` |
 | [`sdrbindings/`](sdrbindings/) | C extension | SDRplay capture over SoapySDR |
-| [`fecbindings/`](fecbindings/) | C extension | Normalized-min-sum LDPC and BCH decoders |
-| [`demodbindings/`](demodbindings/) | C extension | Max-log soft demapper |
-| [`ofdmbindings/`](ofdmbindings/) | C extension | Frequency-interleaver address generator (A/322 7.3) |
 | [`ac4bindings/`](ac4bindings/) | C extension | AC-4 (ETSI TS 103 190) decoder kernels |
 | [`openatsc3-pki/`](openatsc3-pki/) | Python (optional) | Own CA, signed-signaling verification, and CENC content protection (A/360) |
 
-The compiled bindings are **required dependencies** of `atsc3lib`, not
-optional accelerators. The NumPy equivalents are retained only as the
-references the C kernels are differentially tested against.
+The compiled kernels are **required dependencies** of `atsc3lib`, not optional
+accelerators. The NumPy equivalents are retained only as the references the C
+kernels are differentially tested against. `sdrbindings` links the external
+SoapySDR C library and `ac4bindings` is a reusable standalone AC-4
+implementation, so both remain separate distributions.
 
 Documentation and status live in [`meta/`](meta/) (`SUMMARY.md`, the project
 plan, and `AGENTS.md`).
@@ -40,11 +39,8 @@ make            # == uv sync
 ## Build and test
 
 ```bash
-make test         # atsc3lib test suite
+make test         # atsc3lib test suite (includes the compiled kernels)
 make test-all     # every package's suite
-make test-fec     # fecbindings (LDPC + BCH)
-make test-demod   # demodbindings (max-log demapper)
-make test-ofdm    # ofdmbindings (frequency interleaver)
 make test-ac4     # ac4bindings (AC-4)
 make test-sdr     # sdrbindings (SoapySDR)
 make test-pki     # openatsc3-pki

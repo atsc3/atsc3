@@ -1,4 +1,4 @@
-"""ofdmbindings: compiled OFDM kernels for the ATSC 3.0 receiver.
+"""Compiled OFDM kernels (``atsc3lib._bindings.ofdm``) for the ATSC 3.0 receiver.
 
 Currently the frequency interleaver address generator (A/322 7.3), a scalar
 LFSR recurrence that NumPy cannot vectorise and that costs ~25 ms per OFDM

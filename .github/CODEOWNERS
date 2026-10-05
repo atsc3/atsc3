@@ -4,9 +4,6 @@
 
 /atsc3lib/              @atsc3/maintainers
 /sdrbindings/           @atsc3/maintainers
-/fecbindings/           @atsc3/maintainers
-/demodbindings/         @atsc3/maintainers
-/ofdmbindings/          @atsc3/maintainers
 /ac4bindings/           @atsc3/maintainers
 /openatsc3-pki/         @atsc3/maintainers
 /.github/               @atsc3/maintainers

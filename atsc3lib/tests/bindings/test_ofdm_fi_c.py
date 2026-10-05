@@ -1,11 +1,11 @@
-"""Unit tests for the compiled ofdmbindings frequency interleaver (API/edge cases)."""
+"""Unit tests for the compiled frequency interleaver (atsc3lib._bindings.ofdm) (API/edge cases)."""
 
 import numpy as np
 import pytest
 
-ofdmbindings = pytest.importorskip("ofdmbindings")
+_ofdm = pytest.importorskip("atsc3lib._bindings.ofdm")
 
-from ofdmbindings import _fi, available, generate_addresses  # noqa: E402
+from atsc3lib._bindings.ofdm import _fi, available, generate_addresses  # noqa: E402
 
 
 def _p(fft=8192):

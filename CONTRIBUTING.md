@@ -15,8 +15,10 @@ without it.
 ## Layout
 
 Packages live at the repository root, flat: `atsc3lib/`, `sdrbindings/`,
-`fecbindings/`, `demodbindings/`, `ofdmbindings/`, `ac4bindings/`,
-`openatsc3-pki/`. Documentation is in `meta/`.
+`ac4bindings/`, `openatsc3-pki/`. The ATSC kernels (LDPC + BCH, max-log
+demapper, frequency interleaver) are built inside `atsc3lib` under
+`atsc3lib/atsc3lib/_bindings/`, not as separate packages. Documentation is in
+`meta/`.
 `spec/`, `raw/`, `wiki/` and `.opencode/` are local-only and gitignored.
 
 ## Conventions

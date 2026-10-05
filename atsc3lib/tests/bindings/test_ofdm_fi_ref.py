@@ -3,9 +3,9 @@
 import numpy as np
 import pytest
 
-ofdmbindings = pytest.importorskip("ofdmbindings")
+_ofdm = pytest.importorskip("atsc3lib._bindings.ofdm")
 
-from ofdmbindings import generate_addresses  # noqa: E402
+from atsc3lib._bindings.ofdm import generate_addresses  # noqa: E402
 
 
 def _params(fft_size):

@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=61.0", "wheel", "numpy>=1.24"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,7 +7,7 @@ name = "atsc3lib"
 version = "0.1.0"
 description = "ATSC 3.0 Physical Layer Demodulation Library"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10,<3.14"
 license = {text = "Apache-2.0"}
 authors = [
     {name = "OpenATSC3", email = "openatsc3@example.com"}
@@ -17,9 +17,6 @@ dependencies = [
     "scipy>=1.10",
     "matplotlib>=3.5",
     "sdrbindings>=0.1,<0.2",
-    "fecbindings>=0.1,<0.2",
-    "demodbindings>=0.1,<0.2",
-    "ofdmbindings>=0.1,<0.2",
     "ac4bindings>=0.1,<0.2",
     "av>=10.0",
 ]

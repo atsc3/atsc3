@@ -31,7 +31,7 @@ from .nuc_tables import W_VECTORS
 #: The compiled demapper is a hard dependency (see pyproject); the NumPy
 #: demapper is kept only as the reference the C kernel is differentially
 #: tested against.
-import demodbindings as _DEMOD
+from ._bindings import demod as _DEMOD
 
 # Modulation order (bits per symbol) by L1D_plp_mod signalling value.
 # A/322 Table 9.8: 0 QPSK, 1 16QAM-NUC, 2 64QAM-NUC, 3 256QAM-NUC,
@@ -114,7 +114,7 @@ def demap_llr(cells: np.ndarray, mod_order: int, rate: int,
               sigma2: float = None) -> np.ndarray:
     """Max-log LLRs in q-stream order (A/322 6.3.3, y_i = q_{MOD*s+i}).
 
-    Uses the compiled :mod:`demodbindings` kernel when ``sigma2`` is not
+    Uses the compiled :mod:`atsc3lib._bindings.demod` kernel when ``sigma2`` is not
     supplied (the receive-chain case); both give the same values.  When
     ``sigma2`` is pinned, the NumPy reference :func:`_demap_llr_numpy` runs so
     the caller's scale is honoured exactly.

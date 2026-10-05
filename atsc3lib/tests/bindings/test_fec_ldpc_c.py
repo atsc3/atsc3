@@ -1,4 +1,4 @@
-"""Unit tests for the compiled fecbindings kernels.
+"""Unit tests for the compiled FEC kernels (atsc3lib._bindings.fec).
 
 These test the C extension directly (its API contract and edge cases), not only
 whether it reproduces the NumPy reference; the differential checks live in
@@ -8,9 +8,9 @@ whether it reproduces the NumPy reference; the differential checks live in
 import numpy as np
 import pytest
 
-fecbindings = pytest.importorskip("fecbindings")
+_fec = pytest.importorskip("atsc3lib._bindings.fec")
 
-from fecbindings import _ldpc, available, decode_ldpc  # noqa: E402
+from atsc3lib._bindings.fec import _ldpc, available, decode_ldpc  # noqa: E402
 
 
 def _tiny_graph():

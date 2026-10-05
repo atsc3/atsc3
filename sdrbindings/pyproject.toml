@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "sdrbindings"
 version = "0.1.0"
 description = "CPython bindings for the SoapySDR C API (SDRplay RSP1B)"
-requires-python = ">=3.9"
+requires-python = ">=3.10,<3.14"
 license = {text = "Apache-2.0"}
 
 [project.scripts]

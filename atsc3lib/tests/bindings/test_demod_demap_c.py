@@ -1,11 +1,11 @@
-"""Unit tests for the compiled demodbindings kernel (API contract/edge cases)."""
+"""Unit tests for the compiled max-log demapper (atsc3lib._bindings.demod) (API contract/edge cases)."""
 
 import numpy as np
 import pytest
 
-demodbindings = pytest.importorskip("demodbindings")
+_demod = pytest.importorskip("atsc3lib._bindings.demod")
 
-from demodbindings import _demap, available, demap_llr  # noqa: E402
+from atsc3lib._bindings.demod import _demap, available, demap_llr  # noqa: E402
 
 
 class TestSurface:

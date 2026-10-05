@@ -20,9 +20,6 @@ jobs:
       matrix:
         include:
           - { package: atsc3lib,      target: test }
-          - { package: fecbindings,   target: test-fec }
-          - { package: demodbindings, target: test-demod }
-          - { package: ofdmbindings,  target: test-ofdm }
           - { package: ac4bindings,   target: test-ac4 }
           - { package: sdrbindings,   target: test-sdr }
     steps:

@@ -1,0 +1,1 @@
+include atsc3lib/_bindings/*.c

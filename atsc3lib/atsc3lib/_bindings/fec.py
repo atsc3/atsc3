@@ -1,4 +1,4 @@
-"""fecbindings: compiled FEC kernels for the ATSC 3.0 receive chain.
+"""Compiled FEC kernels (``atsc3lib._bindings.fec``) for the ATSC 3.0 chain.
 
 The pure-Python/NumPy LDPC decoder dominates a PLP-0 frame (~3.9 s of ~5 s for
 78 codewords), so it lives here as a C extension.  ``decode_ldpc`` implements

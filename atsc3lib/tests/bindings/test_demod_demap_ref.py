@@ -3,9 +3,9 @@
 import numpy as np
 import pytest
 
-demodbindings = pytest.importorskip("demodbindings")
+_demod = pytest.importorskip("atsc3lib._bindings.demod")
 
-from demodbindings import demap_llr  # noqa: E402
+from atsc3lib._bindings.demod import demap_llr  # noqa: E402
 
 
 @pytest.mark.parametrize("name", ["QPSK", "16QAM", "64QAM", "256QAM"])

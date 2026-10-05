@@ -8,9 +8,9 @@ hard decisions and convergence flag on encoded codewords and on real air LLRs.
 import numpy as np
 import pytest
 
-fecbindings = pytest.importorskip("fecbindings")
+_fec = pytest.importorskip("atsc3lib._bindings.fec")
 
-from fecbindings import decode_ldpc, available  # noqa: E402
+from atsc3lib._bindings.fec import decode_ldpc, available  # noqa: E402
 
 
 def _make_ldpc(rate, n):

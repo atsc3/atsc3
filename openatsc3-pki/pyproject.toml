@@ -7,7 +7,7 @@ name = "openatsc3-pki"
 version = "0.1.0"
 description = "OpenATSC3 certificate authority and content-protection toolkit (ATSC A/360 profiles)"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10,<3.14"
 license = {text = "Apache-2.0"}
 authors = [
     {name = "OpenATSC3", email = "openatsc3@example.com"}

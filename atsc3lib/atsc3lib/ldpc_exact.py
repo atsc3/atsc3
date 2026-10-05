@@ -23,7 +23,7 @@ from .ldpc_tables import LDPC_TABLES_16200, LDPC_TABLES_64800
 #: The compiled FEC backend is a hard dependency (see pyproject): the NumPy
 #: decoder is kept only as the reference the C kernel is differentially tested
 #: against, not as a silent runtime fallback.
-import fecbindings as _FEC
+from ._bindings import fec as _FEC
 
 #: Frame lengths (A/322 6.1.3): short and normal LDPC codewords.
 NINNER_SHORT = 16200
@@ -416,7 +416,7 @@ class ATSC3LDPCExact:
                alpha: float = 0.75) -> Tuple[np.ndarray, bool]:
         """Decode with normalized min-sum belief propagation.
 
-        Uses the compiled :mod:`fecbindings` backend when it is importable
+        Uses the compiled :mod:`atsc3lib._bindings.fec` backend when it is importable
         (identical arithmetic, faster) and otherwise the NumPy reference
         :meth:`_decode_numpy`.  Both return the same ``(info_bits, converged)``.
 

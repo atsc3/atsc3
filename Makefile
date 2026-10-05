@@ -1,16 +1,14 @@
 # ATSC 3.0 monorepo top-level orchestration.
 #
 # The workspace is managed with uv (https://docs.astral.sh/uv/).  A single
-# root .venv holds every package editable: atsc3lib plus the compiled
-# bindings (sdrbindings, fecbindings, demodbindings, ofdmbindings,
-# ac4bindings) and the optional openatsc3-pki.
+# root .venv holds every package editable: atsc3lib (which now builds its own
+# compiled kernels: LDPC + BCH, max-log demapper, frequency interleaver), the
+# separate sdrbindings (SDRplay/SoapySDR) and ac4bindings (AC-4) extensions,
+# and the optional openatsc3-pki.
 #
 #   make              install the whole workspace (uv sync)
-#   make test         run the atsc3lib test suite
+#   make test         run the atsc3lib test suite (includes the C kernels)
 #   make test-all     run every package's test suite
-#   make test-fec     fecbindings (LDPC + BCH) tests
-#   make test-demod   demodbindings (max-log demapper) tests
-#   make test-ofdm    ofdmbindings (frequency interleaver) tests
 #   make test-ac4     ac4bindings (AC-4) tests
 #   make test-sdr     sdrbindings (SoapySDR) tests
 #   make test-pki     openatsc3-pki tests
@@ -24,8 +22,8 @@ UV ?= uv
 RUN ?= $(UV) run --no-sync
 CA_PYTHON ?= openatsc3-pki/.venv-ca/bin/python
 
-.PHONY: all install test test-all test-fec test-demod test-ofdm test-ac4 \
-        test-sdr test-pki test-ca ca-venv ca-migrate check clean
+.PHONY: all install test test-all test-ac4 test-sdr test-pki test-ca \
+        ca-venv ca-migrate check clean
 
 all: install
 
@@ -35,16 +33,7 @@ install:
 test:
 	$(RUN) pytest atsc3lib/tests -q
 
-test-all: test test-fec test-demod test-ofdm test-ac4 test-sdr test-pki
-
-test-fec:
-	$(RUN) pytest fecbindings/tests -q
-
-test-demod:
-	$(RUN) pytest demodbindings/tests -q
-
-test-ofdm:
-	$(RUN) pytest ofdmbindings/tests -q
+test-all: test test-ac4 test-sdr test-pki
 
 test-ac4:
 	$(RUN) pytest ac4bindings/tests -q

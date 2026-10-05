@@ -1,4 +1,4 @@
-"""demodbindings: compiled soft-demodulation kernels for the ATSC 3.0 receiver.
+"""Compiled soft-demodulation kernels (``atsc3lib._bindings.demod``).
 
 The max-log NUC/QAM demapper is O(cells x 2**mod_order); in NumPy it forms a
 full distance matrix and dominates high-order frames (256QAM ~20 s/frame for

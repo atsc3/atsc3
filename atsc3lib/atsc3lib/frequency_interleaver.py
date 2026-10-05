@@ -20,7 +20,7 @@ import numpy as np
 #: The compiled address generator is a hard dependency (see pyproject); the
 #: Python recurrence below is kept only as the reference it is differentially
 #: tested against.
-import ofdmbindings as _OFDM
+from ._bindings import ofdm as _OFDM
 
 
 class _FIParams:
@@ -73,7 +73,7 @@ def generate_addresses(symbol_index: int, fft_size: int,
                        n_data: int) -> np.ndarray:
     """Generate the frequency interleaver address sequence H_l(p).
 
-    Runs the compiled :mod:`ofdmbindings` kernel.  The Python recurrence
+    Runs the compiled :mod:`atsc3lib._bindings.ofdm` kernel.  The Python recurrence
     :meth:`_generate_addresses_numpy` is the reference the C kernel is
     differentially tested against.
 

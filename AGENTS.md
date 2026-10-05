@@ -24,24 +24,29 @@ Guidance for opencode when working in this repository (ATSC 3.0 receiver).
   `make -C /home/ajonen/atsc3/sdrbindings install`; its tests live in
   `sdrbindings/tests/` (`make -C /home/ajonen/atsc3/sdrbindings test`).  The
   old standalone `tools/soapy_capture` helper and its auto-build path were
-  removed.
-- Compiled FEC kernels are `fecbindings`, a CPython extension in
-  `/home/ajonen/atsc3/fecbindings` (not the git repo), installed with
-  `make -C /home/ajonen/atsc3/fecbindings install` and tested with
-  `make -C /home/ajonen/atsc3/fecbindings test` (also `make test-fec` from
-  atsc3lib).  The compiled soft-demodulator is `demodbindings`
-  (`/home/ajonen/atsc3/demodbindings`, `make test-demod`), the max-log
-  demapper; and `ofdmbindings` (`/home/ajonen/atsc3/ofdmbindings`,
-  `make test-ofdm`), the frequency interleaver address generator (A/322 7.3).
-  `fecbindings` also carries the BCH decoder.  **The compiled bindings are
-  required dependencies, not optional accelerators:** `ldpc_exact` and `bch`
-  import `fecbindings`, `nuc` imports `demodbindings`, and
-  `frequency_interleaver` imports `ofdmbindings` unconditionally.  The NumPy implementations are retained only
-  as the references the C kernels are differentially tested against.  **C code
-  must carry its own unit tests** (API contract, edge cases, input validation)
-  *and* differential tests against the Python reference — never differential
-  tests alone, which become tautological the moment the Python path delegates
-  to C.
+  removed.  `sdrbindings` stays a separate distribution because it links the
+  external SoapySDR C library and is not ATSC-specific.
+- The ATSC kernels are compiled into **atsc3lib itself**, as the private
+  `atsc3lib/atsc3lib/_bindings/` subpackage: `_ldpc.c` + `_bch.c` (normalized
+  min-sum LDPC and the BCH decoder), `_demap.c` (max-log NUC/QAM demapper) and
+  `_fi.c` (frequency-interleaver address generator, A/322 7.3).  They were
+  formerly the separate `fecbindings`, `demodbindings` and `ofdmbindings`
+  distributions; `atsc3lib/setup.py` builds all four extensions
+  (`atsc3lib._bindings._ldpc` etc.), so `pip install -e .` / `uv sync` compiles
+  them with the package.  The thin facades `_bindings/fec.py`, `demod.py` and
+  `ofdm.py` keep the old module API.  **They are required dependencies, not
+  optional accelerators:** `ldpc_exact` and `bch` use `_bindings.fec`, `nuc`
+  uses `_bindings.demod`, and `frequency_interleaver` uses `_bindings.ofdm`
+  unconditionally; the NumPy implementations are retained only as the
+  references the C kernels are differentially tested against.  The binding
+  suites live in `atsc3lib/tests/bindings/`.  **C code must carry its own unit
+  tests** (API contract, edge cases, input validation) *and* differential tests
+  against the Python reference — never differential tests alone, which become
+  tautological the moment the Python path delegates to C.
+- AC-4 decoding is `ac4bindings`, a separate distribution
+  (`/home/ajonen/atsc3/ac4bindings`) because it is a reusable standalone
+  implementation (no working open-source AC-4 decoder exists elsewhere);
+  `atsc3lib/audio.py` imports it lazily.
 - **Acceleration is algorithmic before it is a binding.**  The bootstrap
   acquisition was ~5 s because `_fft_correlate_abs` took one FFT of length
   `n + m - 1` (2**20 for a 100 ms window) to correlate a 3072-tap symbol; the

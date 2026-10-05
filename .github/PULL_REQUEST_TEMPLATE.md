@@ -4,8 +4,8 @@
 
 ## Which package(s)
 
-- [ ] atsc3lib
-- [ ] sdrbindings / fecbindings / demodbindings / ofdmbindings / ac4bindings
+- [ ] atsc3lib (includes the compiled kernels under `atsc3lib._bindings`)
+- [ ] sdrbindings / ac4bindings
 - [ ] openatsc3-pki
 - [ ] meta / wiki / docs
 

@@ -2,16 +2,13 @@
 name = "atsc3-workspace"
 version = "0.0.0"
 description = "ATSC 3.0 receiver workspace: atsc3lib, compiled bindings, and the openatsc3 PKI toolkit"
-requires-python = ">=3.9"
+requires-python = ">=3.10,<3.14"
 license = {text = "Apache-2.0"}
 
 [tool.uv.workspace]
 members = [
     "atsc3lib",
     "sdrbindings",
-    "fecbindings",
-    "demodbindings",
-    "ofdmbindings",
     "ac4bindings",
     "openatsc3-pki",
 ]
@@ -19,9 +16,6 @@ members = [
 [tool.uv.sources]
 atsc3lib = { workspace = true }
 sdrbindings = { workspace = true }
-fecbindings = { workspace = true }
-demodbindings = { workspace = true }
-ofdmbindings = { workspace = true }
 ac4bindings = { workspace = true }
 openatsc3-pki = { workspace = true }
 

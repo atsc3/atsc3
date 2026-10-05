@@ -29,30 +29,26 @@ Validated against real off-air captures and an independent receiver.
 
 ## Installation and build
 
-Four compiled extensions are separate packages and declared (required)
-dependencies; install them first, then atsc3lib:
+atsc3lib builds its own ATSC kernels as C extensions under
+`atsc3lib._bindings` (normalized-min-sum LDPC and BCH, max-log demapper,
+frequency-interleaver address generator). Two further compiled extensions are
+separate (required) dependencies:
 
 - `sdrbindings` — SDRplay capture over SoapySDR (`../sdrbindings`).
-- `fecbindings` — the C normalized-min-sum LDPC and BCH decoders (`../fecbindings`).
-- `demodbindings` — the C max-log demapper (`../demodbindings`).
-- `ofdmbindings` — the C frequency interleaver address generator (`../ofdmbindings`).
+- `ac4bindings` — the AC-4 (ETSI TS 103 190) decoder kernels (`../ac4bindings`).
+
+Installing atsc3lib compiles its own kernels:
 
 ```bash
-for d in sdrbindings fecbindings demodbindings ofdmbindings; do
-    make -C ../$d install
-done
 cd atsc3lib
-make install      # pip install -e .
+make install      # pip install -e . (builds atsc3lib._bindings._ldpc etc.)
 ```
 
 `make` targets:
 
 ```bash
-make              # install atsc3lib (editable) and dependencies
-make test         # run the atsc3lib test suite
-make test-fec     # run the fecbindings (LDPC + BCH) test suite
-make test-demod   # run the demodbindings (demapper) test suite
-make test-ofdm    # run the ofdmbindings (frequency interleaver) test suite
+make              # install atsc3lib (editable, compiling its kernels)
+make test         # run the atsc3lib test suite (includes the C kernels)
 make clean        # remove build artefacts
 ```
 
@@ -106,8 +102,9 @@ rx = LiveReceiver(src, LiveConfig(plp_id=16, max_frames=1),
 rx.run(max_windows=12)
 ```
 
-Note: the LDPC (`fecbindings`, ~5x), max-log demapper (`demodbindings`,
-~3-6x), BCH (C) and frequency interleaver (`ofdmbindings`, ~100x) run in C, the
+Note: the LDPC (`atsc3lib._bindings.fec`, ~5x), max-log demapper
+(`atsc3lib._bindings.demod`, ~3-6x), BCH (C) and frequency interleaver
+(`atsc3lib._bindings.ofdm`, ~100x) run in C, the
 FEC blocks are threaded across cores, and bootstrap acquisition is 4x faster
 (overlap-save correlation); a PLP-1 (256QAM) subframe frame dropped from ~190 s
 to ~9 s. The pipeline still does not keep up with the 52.7 ms air rate (this is

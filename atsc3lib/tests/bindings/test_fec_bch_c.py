@@ -3,9 +3,9 @@
 import numpy as np
 import pytest
 
-fecbindings = pytest.importorskip("fecbindings")
+_fec = pytest.importorskip("atsc3lib._bindings.fec")
 
-from fecbindings import _bch, available, decode_bch  # noqa: E402
+from atsc3lib._bindings.fec import _bch, available, decode_bch  # noqa: E402
 
 
 @pytest.fixture(scope="module", params=[16200, 64800])

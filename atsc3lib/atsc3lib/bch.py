@@ -21,7 +21,7 @@ import numpy as np
 #: The compiled BCH decoder is a hard dependency (see pyproject); the pure
 #: Python path below is kept only as the reference it is differentially tested
 #: against.
-import fecbindings as _FEC
+from ._bindings import fec as _FEC
 
 # ATSC Ninner=16200 component polynomials (degree 14, roots alpha^1..alpha^24),
 # given as exponent lists from Table 6.3.
@@ -281,7 +281,7 @@ class BCHCode:
     def decode(self, received_bits) -> Tuple[List[int], int, bool]:
         """Decode a shortened codeword.
 
-        Runs the compiled :mod:`fecbindings` kernel; :meth:`_decode_python` is
+        Runs the compiled :mod:`atsc3lib._bindings.fec` kernel; :meth:`_decode_python` is
         the reference it is differentially tested against.  The C path returns
         a NumPy array for the message bits (a superset of the reference's
         ``list[int]``: callers index, slice and ``len()`` it identically).
