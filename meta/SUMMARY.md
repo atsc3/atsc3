@@ -45,6 +45,7 @@ examples and test vectors.
 | Normal-frame FEC (64800) | A/322 Annex A.1/B.1 | all 12 rates, 4 MODCODs | ✓ Working |
 | Subframe 1 (16K/SP4_4) | L1-D geometry | cell pool 956179, FI reset | ✓ Tables match reference |
 | PLP-1 (256QAM-NUC 11/15, 64800) | 947700 cells | 117/117 + 358 UDP datagrams | ✓ Working (SDRplay + dense CH) |
+| PLP-1 fixture gate (2026-10-05) | `tests/data/rf33_sf1_y.npy` | pool 956179, **117/117** | ✓ Decode-gated (23.0 dB fresh record) |
 
 **RF33 is the lighthouse and it decodes.**  PLP-0 (64QAM-NUC 11/15) converges
 53-60 of 74 FEC blocks off air and yields the A/331 **SLT** (`bsid="540"`,
@@ -71,6 +72,15 @@ estimator, while pure AWGN at 22.9 dB decoded 39/39 — nearest-point MER
 under-reports multipath residual for 256QAM.  **The limiter was equaliser
 residual (multipath), not raw SNR.**  PLP-1 now yields 358 UDP datagrams.
 `decode_subframe_plp` defaults ``dense=True``.
+
+**The subframe-1 fixture was replaced 2026-10-05.**  A fresh SDRplay RSP1B
+record (`out/recapture/rf33_rsp1b_05.iq`, 587 MHz, IFGR 40 / RFGR 4, 8 s) reads
+subframe 1 at **23.0 dB nearest-point MER and decodes 117/117**.  The prior
+`tests/data/rf33_sf1_y.npy` (the 20.6 dB recording) measured **21.5 dB and
+decoded 0/117** — ~1.5 dB short of the oracle's 21.7-22.9 dB cliff — but its
+tests gated **geometry only**, so the shortfall was silent.
+`tests/test_subframe1.py::TestSf1Air::test_plp1_decodes` now asserts 117/117 on
+the new fixture, so a too-weak recording fails loudly.
 
 ## Scope
 

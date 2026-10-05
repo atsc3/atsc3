@@ -106,7 +106,14 @@ Guidance for opencode when working in this repository (ATSC 3.0 receiver).
   358 UDP datagrams from PLP-1).
 - **The old subframe-1 fixture was 9.3 dB nearest-point MER** — unusable for
   256QAM; this is why earlier "both decoders fail" tests proved nothing.  It
-  was replaced 2026-09-27 from a fresh good-antenna capture at 20.6 dB.
+  was replaced 2026-09-27 from a fresh good-antenna capture at 20.6 dB, then
+  **replaced again 2026-10-05**: that 20.6 dB recording measures 21.5 dB and
+  decodes **0/117** (~1.5 dB short of the cliff), but its tests gated geometry
+  only, so the shortfall was silent.  The new `tests/data/rf33_sf1_y.npy` comes
+  from `out/recapture/rf33_rsp1b_05.iq` (SDRplay RSP1B, 587 MHz, IFGR 40 /
+  RFGR 4, 8 s), reads **23.0 dB**, and decodes **117/117**;
+  `tests/test_subframe1.py::TestSf1Air::test_plp1_decodes` now asserts it, so a
+  too-weak fixture fails loudly.
 - LDM/CTI (RF30/RF25) remain implemented-and-gated but not air-demonstrated;
   RF25's 256QAM enhanced layer and RF30's core are capture-limited.
 - **A/331 service discovery now decodes off RF33.**  The gzip-compressed SLT

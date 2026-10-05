@@ -146,14 +146,17 @@ class TestDenseChannel:
 @pytest.mark.skipif(not (os.path.exists(_SF1) and os.path.exists(_META)),
                     reason="real-air subframe-1 fixture not present")
 class TestSf1Air:
-    def _pool(self):
+    def _pool(self, dense: bool = True):
+        # ``dense`` (the A/322 data-PLP multi-symbol channel estimate) is the
+        # receive-chain default (``decode_subframe_plp``); the 256QAM PLP does
+        # not close without it, so the decode gate must match.
         y = np.load(_SF1).astype(np.complex128)
         m = json.load(open(_META))
         return build_data_symbol_pool(
             y, 0, m['fft'], m['gi'], m['noc'], m['dx'], m['dy'],
             m['n_data_symbols'], sbs_symbols=tuple(m['sbs_symbols']),
             pattern=m['pattern'], sbs_null=m['sbs_null'], cred_coeff=m['cred'],
-            fi_offset=m['fi_offset']), m
+            fi_offset=m['fi_offset'], dense=dense), m
 
     def test_pool_length_matches_reference(self):
         pool, _ = self._pool()
@@ -178,3 +181,22 @@ class TestSf1Air:
         blocks = m['plp1']['size'] // (64800 // 8)
         assert blocks == 117
         assert blocks == m['plp1']['nti'] * 39
+
+    def test_plp1_decodes(self):
+        # The fixture must carry enough 256QAM 11/15 link margin to close the
+        # whole PLP.  The previous 20.6 dB recording measured 21.5 dB
+        # nearest-point MER and decoded 0/117 (~1.5 dB short of the cliff,
+        # 21.7-22.9 dB); it gated geometry only, so the shortfall was silent.
+        # This frame measures 23.0 dB and closes 117/117.
+        import types
+        from atsc3lib.payload import decode_plp_from_pool
+        pool, m = self._pool()
+        p = m['plp1']
+        plp = types.SimpleNamespace(
+            plp_id=p['plp_id'], start=p['start'], size=p['size'],
+            modulation=p['mod'], code_rate=p['code_rate'],
+            ti_mode=p['ti_mode'], hti_num_ti_blocks=p['nti'] - 1,
+            hti_cell_interleaver=0, fec_type=p['fec_type'])
+        r = decode_plp_from_pool(pool, plp, max_iterations=100)
+        assert r.n_fec == 117
+        assert r.n_converged == r.n_fec
