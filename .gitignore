@@ -1,0 +1,29 @@
+# Virtual environments (single workspace env is .venv)
+.venv/
+venv/
+
+# Build artefacts
+build/
+dist/
+*.egg-info/
+*egg-info/
+*.so
+
+# Python caches
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Large / licensed / local-only material
+out/
+spec/
+raw/
+
+# Editor / OS
+*.swp
+.DS_Store
+
+# opencode local state
+.opencode/node_modules/

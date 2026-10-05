@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openatsc3-pki"
+version = "0.1.0"
+description = "OpenATSC3 certificate authority and content-protection toolkit (ATSC A/360 profiles)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "OpenATSC3", email = "openatsc3@example.com"}
+]
+dependencies = [
+    "cryptography>=42.0",
+    "asn1crypto>=1.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[project.scripts]
+openatsc3-pki = "openatsc3_pki.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["openatsc3_pki*"]

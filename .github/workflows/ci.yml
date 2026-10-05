@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      atsc3lib: ${{ steps.filter.outputs.atsc3lib }}
+      bindings: ${{ steps.filter.outputs.bindings }}
+      pki: ${{ steps.filter.outputs.pki }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            atsc3lib:
+              - 'atsc3lib/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+            bindings:
+              - 'sdrbindings/**'
+              - 'fecbindings/**'
+              - 'demodbindings/**'
+              - 'ofdmbindings/**'
+              - 'ac4bindings/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+            pki:
+              - 'openatsc3-pki/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+
+  test:
+    needs: changes
+    if: needs.changes.outputs.atsc3lib == 'true' || needs.changes.outputs.bindings == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [atsc3lib, sdrbindings, fecbindings, demodbindings, ofdmbindings, ac4bindings]
+    steps:
+      - uses: actions/checkout@v4
+      - name: System dependencies (SoapySDR for sdrbindings)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsoapysdr-dev pkg-config
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync
+      - name: Test ${{ matrix.package }}
+        run: uv run --no-sync python -m pytest ${{ matrix.package }}/tests -q
+
+  test-pki:
+    needs: changes
+    if: needs.changes.outputs.pki == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync
+      - run: uv run --no-sync python -m pytest openatsc3-pki/tests -q
+
+  integration:
+    needs: [changes, test]
+    if: needs.changes.outputs.atsc3lib == 'true' || needs.changes.outputs.bindings == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: System dependencies
+        run: sudo apt-get update && sudo apt-get install -y libsoapysdr-dev pkg-config
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync
+      - name: atsc3lib integration suite
+        run: uv run --no-sync python -m pytest atsc3lib/tests -q

@@ -1,0 +1,12 @@
+# Replace @atsc3/maintainers with the real org team or user handle once the
+# GitHub team exists.  Per-package ownership can be layered on top of this.
+*                       @atsc3/maintainers
+
+/atsc3lib/              @atsc3/maintainers
+/sdrbindings/           @atsc3/maintainers
+/fecbindings/           @atsc3/maintainers
+/demodbindings/         @atsc3/maintainers
+/ofdmbindings/          @atsc3/maintainers
+/ac4bindings/           @atsc3/maintainers
+/openatsc3-pki/         @atsc3/maintainers
+/.github/               @atsc3/maintainers
