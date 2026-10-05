@@ -55,8 +55,11 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Sync workspace (all packages, editable)
-        run: uv sync --all-packages
+      # Scope the sync to the pki package: it has no dependency on the
+      # compiled bindings, so this avoids building sdrbindings (which needs
+      # SoapySDR headers) while still installing pytest for the suite.
+      - name: Sync openatsc3-pki
+        run: uv sync --package openatsc3-pki --group dev
 
       - name: Test openatsc3-pki
         run: make test-pki
