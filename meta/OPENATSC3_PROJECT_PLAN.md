@@ -3,7 +3,7 @@
 
 **Goal:** Build open-source ATSC 3.0 ecosystem  
 **Timeline:** 12-16 weeks to working receiver with CA validation  
-**Hardware:** HackRF One (~$320). RTL-SDR is **not supported** (2.4 MHz is narrower than the 6 MHz ATSC 3.0 channel).  
+**Hardware:** SDRplay 
 **Language:** Python (library) → Rust (receiver, optional)   
 
 ---
@@ -29,6 +29,17 @@ Phase 3 (Week 13+):   Certificate Authority Platform
                       ├─ Device provisioning
                       └─ Commercial deployment
 ```
+
+> **Market reality (2026-10-05) — read before Phase 3.**  A competing CA cannot
+> displace A3SA in consumer broadcast.  Broadcast DRM is a **two-sided market**
+> A3SA already won, and consumer playback needs a **trusted sink** a gateway
+> cannot provide (SiliconDust's HDHomeRun is Widevine-licensed and A3SA/NextGen
+> certified and still has no approved DRM gateway path; encrypted channels fall
+> back to ATSC 1.0).  The hardware/software split: the CA *authority* can be
+> software; content-key *use* must be hardware-rooted.  Realistic value is a
+> standards-compliant reference, own-content / private trust, option value, and
+> the SDR receiver as a lab instrument — not a product that "sells for
+> thousands."  
 
 ---
 
@@ -80,9 +91,6 @@ pyldpc>=0.2              # Pure Python or libldpc wrapper
 #   Option B: Use C extension binding
 
 # RF/SDR
-hackrf>=0.1 OR osmosdr   # HackRF support (if available)
-# Note: RTL-SDR is NOT supported - its 2.4 MHz bandwidth is narrower than the
-# 6 MHz ATSC 3.0 channel.
 
 # Utilities
 matplotlib>=3.5          # Visualization/debugging
@@ -598,6 +606,13 @@ Total first-year cost: $400-600 + your time + minimal hosting
 Potential first-year revenue: $50K-200K (depending on adoption)
 ```
 
+> **Revised (2026-10-05).**  The revenue line assumes a competing consumer CA
+> gains adoption, which the two-sided-market / trusted-sink analysis rules out
+> Treat this as a
+> research/reference and own-content project: cost stays roughly as listed
+> (plus ~$150 for a used GTX 1080 Ti if live reception is wanted), but
+> third-party broadcast revenue is not a realistic first-year outcome.
+
 ---
 
 ## Success Looks Like
@@ -615,5 +630,13 @@ Potential first-year revenue: $50K-200K (depending on adoption)
 - Competitive advantage (open-source, transparent, cheaper)
 - 4-month timeline to working proof-of-concept
 - Revenue model that works
+
+**Caveat (2026-10-05).**  The receiver, the standards-compliant CA, and the
+own-content/DRM path all work; the "broadcasters pay for an open-source CA"
+revenue model does not follow, because the DRM trust anchor is a two-sided
+market A3SA already occupies and consumer playback needs a trusted sink a
+gateway cannot be.  The durable outputs are the air-proven reference receiver,
+the inspectable signing/validation path, and private/own-content trust — not a
+third-party broadcast platform. 
 
 **Ready to start Week 1?**

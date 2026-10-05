@@ -169,6 +169,21 @@ of the track.  **No Widevine, no A3SA**: the content protection uses our own
 DRM scheme and UUID (ISO/IEC 23001-7 CENC compatible).  The receiver is
 configured to trust our root only (fail-closed).
 
+**Market reality (2026-10-05).**  This is *not* a consumer-broadcast replacement
+for A3SA and will not become one: broadcast DRM is a **two-sided market** A3SA
+already won (broadcasters sign to a root devices trust, and devices add a root
+only when broadcasters demand it), and consumer playback additionally needs a
+**trusted sink** that a network gateway cannot provide.  SiliconDust's HDHomeRun
+— Widevine-licensed (2022), DTCP2-approved, NextGen- and A3SA-certified — still
+has no approved DRM gateway path; encrypted channels fall back to their ATSC 1.0
+version.  The hardware/software split matters: the CA *authority* can be
+software (this repo), but content-key *use* must be hardware-rooted (Gap D), so
+a device is realistically **PHY ASIC + DRM secure element**, with software as
+middleware/CA.  The track's real value is a standards-compliant inspectable
+reference, own-content / private trust (where we are both signer and sink),
+option value, and the SDR receiver as a lab instrument.  Full frame + sources:
+[[atsc3-drm-gateway-trust-boundary]].
+
 This rung is exempt from the on-air ground rule: no receivable stream carries
 our own signature or DRM, so it is gated **synthetically at the A/331 layer**
 (generated CDT/SMT/signed-SLS through `ip.parse_lls` → `slt_from_lls` →
