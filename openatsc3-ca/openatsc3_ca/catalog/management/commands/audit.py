@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from catalog.models import AuditEvent
-from catalog.management.commands._base import AuditCommand
+from openatsc3_ca.catalog.models import AuditEvent
+from openatsc3_ca.catalog.management.commands._base import AuditCommand
 
 
 class Command(AuditCommand):

@@ -206,12 +206,19 @@ Guidance for opencode when working in this repository (ATSC 3.0 receiver).
   atsc3lib extra (`pip install -e .[pki]`), not a hard dependency; without it
   the security gate reports "unavailable" and the receiver still runs.
   `id-atsc = 1.3.6.1.4.1.51552`.
+- **`openatsc3-ca` is the operator application**, split out of `openatsc3-pki`
+  so the crypto library stays dependency-light (only `cryptography` +
+  `asn1crypto`): a Django + PostgreSQL system-of-record (the `openatsc3_ca`
+  project, the `openatsc3_ca.catalog` app with its label pinned to `catalog` so
+  migration history is preserved).  PostgreSQL is authoritative, keys stay on
+  disk, and it depends on `openatsc3-pki`.  Its test extra (`pgserver`, Python
+  3.12 only) runs rootless; `make test-ca`.
 - Open gaps **A–F** (register in `wiki/analyses/own-ca-and-content-protection.md`):
   A = CA operation lifecycle (persistent revocation, real `revoke`, rollover/
-  renewal) — closes with the **Django + PostgreSQL CA app inside
-  `openatsc3-pki`** (optional `[web]` extra; DB authoritative, keys on disk);
-  B = ROUTE/MMTP SLS signing; C = receiver content-protection parse/decrypt;
-  D = HSM/offline root; E = receiver seam; F = docs drift.
+  renewal) — closes with the **Django + PostgreSQL CA app in `openatsc3-ca`**
+  (DB authoritative, keys on disk); B = ROUTE/MMTP SLS signing; C = receiver
+  content-protection parse/decrypt; D = HSM/offline root; E = receiver seam;
+  F = docs drift.
 
 ## Code style
 

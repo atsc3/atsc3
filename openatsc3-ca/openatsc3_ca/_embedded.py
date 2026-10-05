@@ -35,8 +35,8 @@ def embedded_uri(database: Optional[str] = None) -> str:
         import pgserver
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
-            "pgserver is not installed; install the test-ca extra "
-            "(pip install -e '.[test-ca]') or set OPENATSC3_CA_DATABASE_URL"
+            "pgserver is not installed; install the test extra "
+            "(pip install -e '.[test]') or set OPENATSC3_CA_DATABASE_URL"
         ) from exc
     if _SERVER is None:
         data = pgdata_dir()

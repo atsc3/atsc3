@@ -187,18 +187,20 @@ touching the receiver; verdicts attach to `DecodedStreams.verification` and
 **Gap register + Gap A closure plan** are recorded in
 `wiki/analyses/own-ca-and-content-protection.md`.  Gap A (operation lifecycle:
 persistent revocation, real `revoke`, key rollover/renewal) closes with a new
-**Django + PostgreSQL CA management app inside `openatsc3-pki`** as an optional
-`[web]` extra: PostgreSQL is the source of truth, keys stay on disk (0600, DB
-holds path + fingerprint), PEMs are materialized on `export`, admin-only v1,
-and the first data migration imports the existing CA tree.  Gaps B–F
+**Django + PostgreSQL CA operator application, `openatsc3-ca`**: PostgreSQL is
+the source of truth, keys stay on disk (0600, DB holds path + fingerprint), PEMs
+are materialized on `export`, admin-only v1, and the first data migration
+imports the existing CA tree.  It depends on the now dependency-light
+`openatsc3-pki` crypto library (only `cryptography` + `asn1crypto`).  Gaps B–F
 (ROUTE/MMTP SLS signing, receiver content decryptor, HSM/offline root) remain
 open.
-**Gap A Phase 1 is done (2026-10-04):** `openatsc3_ca/` + `catalog/` are in
-place under `openatsc3-pki` (optional `[web]` extra); PostgreSQL is
-authoritative, keys stay on disk, `revoke` now persists and turns the stapled
-OCSP to `revoked`, and `export`/`import-tree` move the DB and PEM tree in both
-directions.  Migrations `0001`–`0003` (incl. the spec seed and the legacy-tree
-data migration, idempotent + reversible).  Tests: `make test-ca` = 55 pass
+**Gap A Phase 1 is done (2026-10-04):** the app lives in `openatsc3-ca` as
+`openatsc3_ca/` + the `openatsc3_ca.catalog` app (label pinned to `catalog`, so
+the migration history is unchanged); PostgreSQL is authoritative, keys stay on
+disk, `revoke` now persists and turns the stapled OCSP to `revoked`, and
+`export`/`import-tree` move the DB and PEM tree in both directions.
+Migrations `0001`–`0003` (incl. the spec seed and the legacy-tree data
+migration, idempotent + reversible).  Tests: `make test-ca` = 11 pass
 (embedded rootless PostgreSQL 16.2 via `pgserver`, no Docker needed; a
 `docker-compose.yml` is provided for deployment), including the end-to-end gate
 where a revoked signer makes the receiver's `verify_certification_data` fail;

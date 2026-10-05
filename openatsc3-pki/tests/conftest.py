@@ -1,16 +1,8 @@
 """Shared fixtures: a throwaway CA tree and a signed CertificationData table."""
 
 import datetime as dt
-import os
 
 import pytest
-
-# The Django/PostgreSQL CA tests live in tests/ca and need pytest-django plus a
-# running PostgreSQL.  They are collected only when OPENATSC3_CA_TEST is set
-# (see the ``test-ca`` Makefile target), so the plain crypto suite needs neither.
-collect_ignore = []
-if not os.environ.get("OPENATSC3_CA_TEST"):
-    collect_ignore.append("ca")
 
 from openatsc3_pki import ca, cdt, keys, ocsp
 from openatsc3_pki.x509 import (

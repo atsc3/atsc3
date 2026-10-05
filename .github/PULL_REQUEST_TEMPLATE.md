@@ -6,7 +6,7 @@
 
 - [ ] atsc3lib (includes the compiled kernels under `atsc3lib._bindings`)
 - [ ] sdrbindings / ac4bindings
-- [ ] openatsc3-pki
+- [ ] openatsc3-pki (crypto library) / openatsc3-ca (Django app)
 - [ ] meta / wiki / docs
 
 ## Validation

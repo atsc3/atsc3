@@ -11,7 +11,7 @@ Database selection, in order:
 2. ``DATABASE_URL`` — a conventional fallback;
 3. otherwise a **rootless embedded PostgreSQL** (``pgserver``, no Docker).
 
-Run the app on Python 3.12 with the ``[web]`` extra installed.
+Run the app on Python 3.12 with the ``[test]`` extra installed.
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-    "catalog",
+    "openatsc3_ca.catalog",
 ]
 
 MIDDLEWARE = [

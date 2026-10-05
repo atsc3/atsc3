@@ -99,55 +99,14 @@ pytest -q
 (schema repo `atsc-schemas.org`), used as an external oracle: it pins the
 `id-atsc-sdattr-bsid` encoding and the real-ATSC certificate profile.
 
-## Django + PostgreSQL CA management app (Gap A closure)
+## CA operator application
 
-The lifecycle gap — persistent revocation, a real `revoke`, and rollover — is
-closed by an optional Django app that lives in this package.  It is the
-operator / system-of-record layer; **the crypto library above needs none of
-it**, and PostgreSQL is the source of truth.
-
-- `openatsc3_ca/` — Django project (settings, URLs, WSGI/ASGI).
-- `catalog/` — the ledger app: models, admin, management commands, migrations.
-
-**Keys stay on disk (0600)** and are referenced by path + SHA-256; the DB never
-holds key bytes.  The classic `<base>/*.pem` tree is materialized from the
-database by the `export` command (the receiver/signer still read it).
-
-Install (Python 3.12; the database driver is optional):
-
-```bash
-pip install -e '.[web]'
-```
-
-Database selection: `OPENATSC3_CA_DATABASE_URL`, else `DATABASE_URL`, else a
-**rootless embedded PostgreSQL** (`pgserver`, no Docker).  A `docker-compose.yml`
-is provided for a real server (Docker or `podman-compose`).
-
-```bash
-export OPENATSC3_CA_BASE_DIR=out/ca
-python manage.py migrate
-python manage.py createsuperuser      # admin at /admin/
-python manage.py init-root
-python manage.py issue-ca
-python manage.py issue-ocsp-responder
-python manage.py issue-broadcaster --name WHUT --bsid 540
-python manage.py ocsp --serial <serial>
-python manage.py revoke --serial <serial>   # persistent; OCSP now says revoked
-python manage.py export                     # DB -> PEM tree
-python manage.py import-tree --path out/pkitest   # legacy tree -> DB (data migration)
-python manage.py audit
-```
-
-Models: `Certificate`, `Broadcaster`, `OcspResponse`, `OcspResponder`,
-`RolloverPlan` (Phase 2 drives it, the window constraint is already enforced),
-`PublishedSignaling`, `SpecReference`, and an append-only `AuditEvent`.
-
-Tests: `make test-ca` runs the Django/PostgreSQL suite against the embedded
-server (Python 3.12; `pgserver` has no 3.13 wheel).  It covers the model
-constraints, revocation persistence, OCSP status transitions, the legacy-tree
-data migration (and its reversal), and the end-to-end gate where a **revoked
-signer makes the receiver's `verify_certification_data` fail**.  `make test-pki`
-stays database-free.
+The lifecycle layer — persistent revocation, a real `revoke`, and rollover — is
+**not** part of this library.  It lives in the separate
+[`openatsc3-ca`](../openatsc3-ca/) package (Django + PostgreSQL), which depends on
+`openatsc3-pki` and drives these primitives.  Keeping it out means this package
+stays a dependency-light crypto library (only `cryptography` and `asn1crypto`),
+which is all the receiver and signer need.
 
 ## Not yet implemented
 

@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openatsc3-ca"
+version = "0.1.0"
+description = "OpenATSC3 CA operator application: Django + PostgreSQL ledger over the openatsc3-pki toolkit"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "OpenATSC3", email = "openatsc3@example.com"}
+]
+dependencies = [
+    "openatsc3-pki>=0.1,<0.2",
+    "django>=5.1,<6",
+    "psycopg[binary]>=3.1",
+]
+
+[project.optional-dependencies]
+# Rootless embedded PostgreSQL for tests / local dev without Docker.  The
+# pgserver wheel is 3.12-only, so run the test suite on Python 3.12.
+test = [
+    "pgserver>=0.1.4",
+    "psycopg[binary]>=3.1",
+    "pytest>=7.0",
+    "pytest-django>=4.8",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["openatsc3_ca*"]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "openatsc3_ca.settings"
+testpaths = ["tests"]

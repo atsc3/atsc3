@@ -5,20 +5,24 @@
 One workspace, one environment:
 
 ```bash
-make          # uv sync: creates .venv with every package editable
+make          # scoped sync: atsc3lib + sdrbindings + ac4bindings + openatsc3-pki
+make install-all  # every package, including the openatsc3-ca Django app
 make test-all # run every package's test suite
 ```
 
-`openatsc3-pki` is optional; the receiver and the compiled bindings install
-without it.
+Every package is a first-class workspace member, so any one can be synced on
+its own (`uv sync --package sdrbindings --group dev`). `openatsc3-pki` (crypto
+library) and `openatsc3-ca` (its Django app) are optional; the receiver and the
+compiled bindings install without them.
 
 ## Layout
 
 Packages live at the repository root, flat: `atsc3lib/`, `sdrbindings/`,
-`ac4bindings/`, `openatsc3-pki/`. The ATSC kernels (LDPC + BCH, max-log
-demapper, frequency interleaver) are built inside `atsc3lib` under
-`atsc3lib/atsc3lib/_bindings/`, not as separate packages. Documentation is in
-`meta/`.
+`ac4bindings/`, `openatsc3-pki/`, `openatsc3-ca/`. The ATSC kernels (LDPC + BCH,
+max-log demapper, frequency interleaver) are built inside `atsc3lib` under
+`atsc3lib/atsc3lib/_bindings/`, not as separate packages. `openatsc3-pki` is the
+dependency-light CA/crypto library; `openatsc3-ca` is the Django + PostgreSQL
+operator app that depends on it. Documentation is in `meta/`.
 `spec/`, `raw/`, `wiki/` and `.opencode/` are local-only and gitignored.
 
 ## Conventions

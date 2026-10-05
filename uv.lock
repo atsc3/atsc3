@@ -12,6 +12,7 @@ members = [
     "ac4bindings",
     "atsc3-workspace",
     "atsc3lib",
+    "openatsc3-ca",
     "openatsc3-pki",
     "sdrbindings",
 ]
@@ -1040,6 +1041,36 @@ wheels = [
 ]
 
 [[package]]
+name = "openatsc3-ca"
+version = "0.1.0"
+source = { editable = "openatsc3-ca" }
+dependencies = [
+    { name = "django" },
+    { name = "openatsc3-pki" },
+    { name = "psycopg", extra = ["binary"] },
+]
+
+[package.optional-dependencies]
+test = [
+    { name = "pgserver" },
+    { name = "psycopg", extra = ["binary"] },
+    { name = "pytest" },
+    { name = "pytest-django" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "django", specifier = ">=5.1,<6" },
+    { name = "openatsc3-pki", editable = "openatsc3-pki" },
+    { name = "pgserver", marker = "extra == 'test'", specifier = ">=0.1.4" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.1" },
+    { name = "psycopg", extras = ["binary"], marker = "extra == 'test'", specifier = ">=3.1" },
+    { name = "pytest", marker = "extra == 'test'", specifier = ">=7.0" },
+    { name = "pytest-django", marker = "extra == 'test'", specifier = ">=4.8" },
+]
+provides-extras = ["test"]
+
+[[package]]
 name = "openatsc3-pki"
 version = "0.1.0"
 source = { editable = "openatsc3-pki" }
@@ -1052,30 +1083,14 @@ dependencies = [
 dev = [
     { name = "pytest" },
 ]
-test-ca = [
-    { name = "pgserver" },
-    { name = "psycopg", extra = ["binary"] },
-    { name = "pytest" },
-    { name = "pytest-django" },
-]
-web = [
-    { name = "django" },
-    { name = "psycopg", extra = ["binary"] },
-]
 
 [package.metadata]
 requires-dist = [
     { name = "asn1crypto", specifier = ">=1.5" },
     { name = "cryptography", specifier = ">=42.0" },
-    { name = "django", marker = "extra == 'web'", specifier = ">=5.1,<6" },
-    { name = "pgserver", marker = "extra == 'test-ca'", specifier = ">=0.1.4" },
-    { name = "psycopg", extras = ["binary"], marker = "extra == 'test-ca'", specifier = ">=3.1" },
-    { name = "psycopg", extras = ["binary"], marker = "extra == 'web'", specifier = ">=3.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
-    { name = "pytest", marker = "extra == 'test-ca'", specifier = ">=7.0" },
-    { name = "pytest-django", marker = "extra == 'test-ca'", specifier = ">=4.8" },
 ]
-provides-extras = ["web", "test-ca", "dev"]
+provides-extras = ["dev"]
 
 [[package]]
 name = "packaging"

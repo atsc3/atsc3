@@ -11,6 +11,7 @@ members = [
     "sdrbindings",
     "ac4bindings",
     "openatsc3-pki",
+    "openatsc3-ca",
 ]
 
 [tool.uv.sources]
@@ -18,6 +19,7 @@ atsc3lib = { workspace = true }
 sdrbindings = { workspace = true }
 ac4bindings = { workspace = true }
 openatsc3-pki = { workspace = true }
+openatsc3-ca = { workspace = true }
 
 [dependency-groups]
 dev = [

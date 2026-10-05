@@ -14,7 +14,8 @@ WHUT mux, SDRplay RSP1B) and an independent receiver.
 | [`atsc3lib/`](atsc3lib/) | Python + C extensions | Physical-layer demodulation, L1 signalling, data-PLP decoding, and A/331 service discovery / ROUTE / MMTP / media. The dense kernels (normalized-min-sum LDPC and BCH, max-log demapper, frequency-interleaver address generator) are built in as `atsc3lib._bindings` |
 | [`sdrbindings/`](sdrbindings/) | C extension | SDRplay capture over SoapySDR |
 | [`ac4bindings/`](ac4bindings/) | C extension | AC-4 (ETSI TS 103 190) decoder kernels |
-| [`openatsc3-pki/`](openatsc3-pki/) | Python (optional) | Own CA, signed-signaling verification, and CENC content protection (A/360) |
+| [`openatsc3-pki/`](openatsc3-pki/) | Python (optional) | Own CA, signed-signaling verification, and CENC content protection (A/360). Dependency-light: only `cryptography` + `asn1crypto` |
+| [`openatsc3-ca/`](openatsc3-ca/) | Python (optional) | CA operator application: a Django + PostgreSQL ledger over `openatsc3-pki` (persistent revocation, rollover, admin UI) |
 
 The compiled kernels are **required dependencies** of `atsc3lib`, not optional
 accelerators. The NumPy equivalents are retained only as the references the C
@@ -28,13 +29,17 @@ plan, and `AGENTS.md`).
 ## Install
 
 The workspace is managed with [uv](https://docs.astral.sh/uv/). One command
-creates a single `.venv` with every package installed editable:
+creates a single `.venv` with the receiver stack installed editable:
 
 ```bash
-make            # == uv sync
+make              # scoped: atsc3lib + sdrbindings + ac4bindings + openatsc3-pki
+make install-all  # every package, including the openatsc3-ca Django app
 ```
 
-`openatsc3-pki` is an optional extra; the receiver runs without it.
+Every package is a first-class workspace member, so the sync can be scoped to
+one: `uv sync --package ac4bindings --group dev`. The default `make` install
+deliberately leaves out `openatsc3-ca` (Django + psycopg); use `make install-all`
+or the separate `openatsc3-ca/.venv-ca` for the CA app.
 
 ## Build and test
 
@@ -43,7 +48,8 @@ make test         # atsc3lib test suite (includes the compiled kernels)
 make test-all     # every package's suite
 make test-ac4     # ac4bindings (AC-4)
 make test-sdr     # sdrbindings (SoapySDR)
-make test-pki     # openatsc3-pki
+make test-pki     # openatsc3-pki crypto (no Django/DB)
+make test-ca      # openatsc3-ca Django + PostgreSQL app (Python 3.12)
 make check        # py_compile every Python source (no linter is configured)
 make clean        # remove build artefacts
 ```

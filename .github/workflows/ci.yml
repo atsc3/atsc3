@@ -19,13 +19,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { package: atsc3lib,      target: test }
-          - { package: ac4bindings,   target: test-ac4 }
-          - { package: sdrbindings,   target: test-sdr }
+          - { package: atsc3lib,    target: test,     sync: "uv sync --package atsc3lib --extra pki --group dev" }
+          - { package: ac4bindings, target: test-ac4, sync: "uv sync --package ac4bindings --group dev" }
+          - { package: sdrbindings, target: test-sdr, sync: "uv sync --package sdrbindings --group dev" }
     steps:
       - uses: actions/checkout@v4
 
       - name: System dependencies (SoapySDR for sdrbindings)
+        if: matrix.package == 'sdrbindings'
         run: |
           sudo apt-get update
           sudo apt-get install -y libsoapysdr-dev pkg-config
@@ -35,8 +36,12 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Sync workspace (all packages, editable)
-        run: uv sync --all-packages
+      # Each package is a first-class workspace member, so the sync is scoped to
+      # just what that package's suite needs.  (atsc3lib also pulls the light
+      # openatsc3-pki library via its [pki] extra; the Django app is never
+      # installed here.)
+      - name: Sync ${{ matrix.package }}
+        run: ${{ matrix.sync }}
 
       - name: Test ${{ matrix.package }}
         run: make ${{ matrix.target }}
@@ -62,7 +67,7 @@ jobs:
         run: make test-pki
 
   test-ca:
-    name: openatsc3-pki (Django + PostgreSQL CA)
+    name: openatsc3-ca (Django + PostgreSQL CA)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -72,13 +77,13 @@ jobs:
         with:
           python-version: "3.12"
 
-      # The CA app is an optional extra.  pgserver ships a rootless embedded
-      # PostgreSQL (16.2) that runs as the runner user, so no service container
-      # and no Docker are needed in CI.
+      # The CA app lives in openatsc3-ca and depends on openatsc3-pki.  Its test
+      # extra pulls pgserver, a rootless embedded PostgreSQL (16.2) that runs as
+      # the runner user, so no service container and no Docker are needed.
       - name: Create CA environment and install extras
         run: |
           uv venv --python 3.12 .venv-ca
-          uv pip install --python .venv-ca/bin/python -e './openatsc3-pki[web,test-ca]'
+          uv pip install --python .venv-ca/bin/python -e './openatsc3-ca[test]'
 
       - name: Test CA app
-        run: make -C openatsc3-pki test-ca CA_PYTHON="$PWD/.venv-ca/bin/python"
+        run: make -C openatsc3-ca test PYTHON="$PWD/.venv-ca/bin/python"

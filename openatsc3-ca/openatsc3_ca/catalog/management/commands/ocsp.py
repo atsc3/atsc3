@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from catalog import services
-from catalog.management.commands._base import AuditCommand
-from catalog.models import Certificate, OcspResponder
+from openatsc3_ca.catalog import services
+from openatsc3_ca.catalog.management.commands._base import AuditCommand
+from openatsc3_ca.catalog.models import Certificate, OcspResponder
 
 
 class Command(AuditCommand):

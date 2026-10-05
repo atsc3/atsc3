@@ -5,7 +5,7 @@
     python manage.py createsuperuser
     python manage.py runserver
 
-Run ``manage.py`` with a Python 3.12 environment that has the ``[web]`` extra.
+Run ``manage.py`` with a Python 3.12 environment that has Django installed.
 The crypto library (``openatsc3_pki``) itself needs no Django.
 """
 
@@ -19,8 +19,8 @@ def main() -> None:
         from django.core.management import execute_from_command_line
     except ImportError as exc:  # pragma: no cover
         raise ImportError(
-            "Django is not installed.  Install the web extra: "
-            "pip install -e '.[web]'"
+            "Django is not installed.  Install the package: "
+            "pip install -e 'openatsc3-ca'"
         ) from exc
     execute_from_command_line(sys.argv)
 
