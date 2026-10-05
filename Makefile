@@ -26,30 +26,30 @@ RUN ?= $(UV) run --no-sync
 all: install
 
 install:
-	$(UV) sync
+	$(UV) sync --all-packages
 
 test:
-	$(RUN) python -m pytest atsc3lib/tests -q
+	$(RUN) pytest atsc3lib/tests -q
 
 test-all: test test-fec test-demod test-ofdm test-ac4 test-sdr test-pki
 
 test-fec:
-	$(RUN) python -m pytest fecbindings/tests -q
+	$(RUN) pytest fecbindings/tests -q
 
 test-demod:
-	$(RUN) python -m pytest demodbindings/tests -q
+	$(RUN) pytest demodbindings/tests -q
 
 test-ofdm:
-	$(RUN) python -m pytest ofdmbindings/tests -q
+	$(RUN) pytest ofdmbindings/tests -q
 
 test-ac4:
-	$(RUN) python -m pytest ac4bindings/tests -q
+	$(RUN) pytest ac4bindings/tests -q
 
 test-sdr:
-	$(RUN) python -m pytest sdrbindings/tests -q
+	$(RUN) pytest sdrbindings/tests -q
 
 test-pki:
-	$(RUN) python -m pytest openatsc3-pki/tests -q
+	$(RUN) pytest openatsc3-pki/tests -q
 
 check:
 	$(RUN) python -m compileall -q atsc3lib/atsc3lib openatsc3-pki/openatsc3_pki

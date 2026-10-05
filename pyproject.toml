@@ -25,5 +25,14 @@ ofdmbindings = { workspace = true }
 ac4bindings = { workspace = true }
 openatsc3-pki = { workspace = true }
 
+[dependency-groups]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["atsc3lib/tests"]
+# atsc3lib's tests import the sibling `tools` package (`from tools import ...`),
+# so `atsc3lib/` must be importable when pytest runs from the monorepo root.
+pythonpath = ["atsc3lib"]
