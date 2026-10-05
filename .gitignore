@@ -21,9 +21,10 @@ out/
 spec/
 raw/
 
+# Local-only working notes and tooling
+wiki/
+.opencode/
+
 # Editor / OS
 *.swp
 .DS_Store
-
-# opencode local state
-.opencode/node_modules/

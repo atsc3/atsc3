@@ -16,8 +16,8 @@ without it.
 
 Packages live at the repository root, flat: `atsc3lib/`, `sdrbindings/`,
 `fecbindings/`, `demodbindings/`, `ofdmbindings/`, `ac4bindings/`,
-`openatsc3-pki/`. Documentation is in `meta/`; the knowledge base is `wiki/`.
-`spec/` and `raw/` are local-only and gitignored.
+`openatsc3-pki/`. Documentation is in `meta/`.
+`spec/`, `raw/`, `wiki/` and `.opencode/` are local-only and gitignored.
 
 ## Conventions
 

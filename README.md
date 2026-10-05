@@ -24,7 +24,7 @@ optional accelerators. The NumPy equivalents are retained only as the
 references the C kernels are differentially tested against.
 
 Documentation and status live in [`meta/`](meta/) (`SUMMARY.md`, the project
-plan, and `AGENTS.md`) and the knowledge base in [`wiki/`](wiki/).
+plan, and `AGENTS.md`).
 
 ## Install
 
@@ -57,9 +57,9 @@ decode chain, capture instructions, CLI usage, and the full command surface.
 
 ## Repository layout notes
 
-- `spec/` (licensed standards PDFs) and `raw/` (wiki source material) are
-  **gitignored and local-only**. Fetch spec material with
-  `atsc3lib/tools/spec_sources.py`.
+- `spec/` (licensed standards PDFs), `raw/`, the `wiki/` knowledge base and
+  the `.opencode/` tooling are **gitignored and local-only**. Fetch spec
+  material with `atsc3lib/tools/spec_sources.py`.
 - `out/` holds large IQ captures and decoded media; it is gitignored.
 - `AGENTS.md` is a symlink to `meta/AGENTS.md`.
 
