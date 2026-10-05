@@ -25,8 +25,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: System dependencies (SoapySDR for sdrbindings)
-        if: matrix.package == 'sdrbindings'
+      # atsc3lib hard-depends on sdrbindings, so both jobs need the SoapySDR
+      # headers to compile it; ac4bindings is standalone.
+      - name: System dependencies (SoapySDR)
+        if: matrix.package == 'sdrbindings' || matrix.package == 'atsc3lib'
         run: |
           sudo apt-get update
           sudo apt-get install -y libsoapysdr-dev pkg-config
