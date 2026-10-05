@@ -8,6 +8,7 @@ One workspace, one environment:
 make          # scoped sync: atsc3lib + sdrbindings + ac4bindings + openatsc3-pki
 make install-all  # every package, including the openatsc3-ca Django app
 make test-all # run every package's test suite
+make docs     # build the Sphinx documentation into docs/_build/html
 ```
 
 Every package is a first-class workspace member, so any one can be synced on
@@ -22,7 +23,8 @@ Packages live at the repository root, flat: `atsc3lib/`, `sdrbindings/`,
 max-log demapper, frequency interleaver) are built inside `atsc3lib` under
 `atsc3lib/atsc3lib/_bindings/`, not as separate packages. `openatsc3-pki` is the
 dependency-light CA/crypto library; `openatsc3-ca` is the Django + PostgreSQL
-operator app that depends on it. Documentation is in `meta/`.
+operator app that depends on it. Documentation is in `docs/` (reStructuredText,
+built with Sphinx; `make docs`); notes and status are in `meta/`.
 `spec/`, `raw/`, `wiki/` and `.opencode/` are local-only and gitignored.
 
 ## Conventions

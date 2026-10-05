@@ -14,6 +14,9 @@ dist/
 *egg-info/
 *.so
 
+# Sphinx documentation build
+docs/_build/
+
 # Python caches
 __pycache__/
 *.pyc

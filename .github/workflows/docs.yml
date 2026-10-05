@@ -1,0 +1,65 @@
+name: Docs
+
+# Build the Sphinx documentation and publish it to GitHub Pages.  Requires
+# the repository's Pages source to be set to "GitHub Actions"
+# (Settings -> Pages -> Build and deployment -> Source).
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'atsc3lib/**'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+# Allow the deploy job to publish to Pages via OIDC.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One Pages deployment at a time; do not cancel an in-flight publish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The docs autodoc atsc3lib; the sync builds sdrbindings as a dependency,
+      # which needs the SoapySDR headers.
+      - name: System dependencies (SoapySDR for the sdrbindings dep)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsoapysdr-dev pkg-config
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build documentation
+        run: |
+          uv sync --package atsc3lib --extra pki --group dev --group docs
+          uv run --no-sync python -m sphinx -b html -W docs docs/_build/html
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/_build/html
+
+  deploy:
+    name: deploy
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

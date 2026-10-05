@@ -66,6 +66,29 @@ jobs:
       - name: Test openatsc3-pki
         run: make test-pki
 
+  docs:
+    name: docs (Sphinx)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System dependencies (SoapySDR for the sdrbindings dep)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsoapysdr-dev pkg-config
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      # The docs autodoc atsc3lib, so the sync pulls atsc3lib's compiled
+      # kernels plus the docs group, then builds with warnings as errors.
+      - name: Build documentation
+        run: |
+          uv sync --package atsc3lib --extra pki --group dev --group docs
+          uv run --no-sync python -m sphinx -b html -W docs docs/_build/html
+
   test-ca:
     name: openatsc3-ca (Django + PostgreSQL CA)
     runs-on: ubuntu-latest

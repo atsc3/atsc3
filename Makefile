@@ -16,6 +16,7 @@
 #   make test-ca      openatsc3-ca Django + PostgreSQL CA tests (Python 3.12)
 #   make ca-venv      create the Python 3.12 venv the CA app needs
 #   make ca-migrate   apply the CA app migrations (embedded PostgreSQL)
+#   make docs         build the Sphinx documentation into docs/_build/html
 #   make check        py_compile every Python source (no linter is configured)
 #   make clean        remove build artefacts
 #
@@ -28,7 +29,7 @@ RUN ?= $(UV) run --no-sync
 CA_PYTHON ?= openatsc3-ca/.venv-ca/bin/python
 
 .PHONY: all install install-all test test-all test-ac4 test-sdr test-pki test-ca \
-        ca-venv ca-migrate check clean
+        ca-venv ca-migrate docs check clean
 
 all: install
 
@@ -63,6 +64,10 @@ test-ca:
 
 ca-migrate:
 	$(CA_PYTHON) openatsc3-ca/manage.py migrate
+
+docs:
+	$(UV) sync --package atsc3lib --extra pki --group dev --group docs
+	$(RUN) python -m sphinx -b html docs docs/_build/html
 
 check:
 	$(RUN) python -m compileall -q atsc3lib/atsc3lib openatsc3-pki/openatsc3_pki openatsc3-ca/openatsc3_ca

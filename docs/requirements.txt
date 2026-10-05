@@ -1,0 +1,4 @@
+# Documentation build requirements.  These are intentionally not installed by
+# the default `make` (the receiver stack); `make docs` syncs this group.
+sphinx>=7.0
+sphinx-rtd-theme>=2.0
