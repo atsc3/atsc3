@@ -23,8 +23,16 @@ kernels are differentially tested against. `sdrbindings` links the external
 SoapySDR C library and `ac4bindings` is a reusable standalone AC-4
 implementation, so both remain separate distributions.
 
-Documentation and status live in [`meta/`](meta/) (`SUMMARY.md`, the project
-plan, and `AGENTS.md`).
+## Documentation
+
+The user documentation is built with Sphinx and published to GitHub Pages:
+**https://atsc3.github.io/atsc3/**. It covers getting started, SDRplay setup,
+the live-reception status, and the Python API. Build it locally with
+`make docs` (output in `docs/_build/html`).
+
+Status and planning notes live in [`meta/`](meta/) (`SUMMARY.md`, the project
+plan, and `AGENTS.md`); the frequently updated working record is the local
+`wiki/` knowledge base.
 
 ## Install
 
@@ -50,6 +58,7 @@ make test-ac4     # ac4bindings (AC-4)
 make test-sdr     # sdrbindings (SoapySDR)
 make test-pki     # openatsc3-pki crypto (no Django/DB)
 make test-ca      # openatsc3-ca Django + PostgreSQL app (Python 3.12)
+make docs         # build the Sphinx documentation into docs/_build/html
 make check        # py_compile every Python source (no linter is configured)
 make clean        # remove build artefacts
 ```
