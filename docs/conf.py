@@ -35,11 +35,9 @@ autodoc_member_order = "bysource"
 autodoc_typehints = "description"
 autosectionlabel_prefix_document = True
 
-templates_path = ["_templates"]
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 html_theme = "sphinx_rtd_theme"
-html_static_path = ["_static"]
 html_title = "OpenATSC3"
 html_show_sourcelink = False
 
