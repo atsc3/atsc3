@@ -83,11 +83,11 @@ def test_private_key_permissions(tmp_path):
 def test_published_atsc_cdt_bsid_decodes():
     """The published ATSC example CDT carries bsid 33 (RC1-CA1-LC3)."""
     import base64
+    import os
     import xml.etree.ElementTree as ET
 
     from openatsc3_pki.x509 import load_der
-    path = "tests/data/cdt_example.xml"
-    import os
+    path = os.path.join(os.path.dirname(__file__), "data", "cdt_example.xml")
     if not os.path.exists(path):
         pytest.skip("published CDT example not present")
     root = ET.parse(path).getroot()

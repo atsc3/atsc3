@@ -201,8 +201,12 @@ Guidance for opencode when working in this repository (ATSC 3.0 receiver).
   atsc3lib extra (`pip install -e .[pki]`), not a hard dependency; without it
   the security gate reports "unavailable" and the receiver still runs.
   `id-atsc = 1.3.6.1.4.1.51552`.
-- Open: HSM/offline root key handling; ROUTE/MMTP SLS fragment signers beyond
-  the LLS table path.
+- Open gaps **A–F** (register in `wiki/analyses/own-ca-and-content-protection.md`):
+  A = CA operation lifecycle (persistent revocation, real `revoke`, rollover/
+  renewal) — closes with the **Django + PostgreSQL CA app inside
+  `openatsc3-pki`** (optional `[web]` extra; DB authoritative, keys on disk);
+  B = ROUTE/MMTP SLS signing; C = receiver content-protection parse/decrypt;
+  D = HSM/offline root; E = receiver seam; F = docs drift.
 
 ## Code style
 

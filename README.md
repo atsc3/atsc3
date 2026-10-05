@@ -61,7 +61,6 @@ decode chain, capture instructions, CLI usage, and the full command surface.
   the `.opencode/` tooling are **gitignored and local-only**. Fetch spec
   material with `atsc3lib/tools/spec_sources.py`.
 - `out/` holds large IQ captures and decoded media; it is gitignored.
-- `AGENTS.md` is a symlink to `meta/AGENTS.md`.
 
 ## License
 

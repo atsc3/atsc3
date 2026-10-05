@@ -183,8 +183,27 @@ provider) so the CA/DRM backend can be swapped for A3SA/Widevine without
 touching the receiver; verdicts attach to `DecodedStreams.verification` and
 `atsc3-decode` gained `--trust-root` / `--security-provider` /
 `--require-signature`; `atsc3lib/tests/test_security.py` and
-`test_security_provider.py` gate it.  Remaining: HSM/offline-root handling and
-the ROUTE/MMTP SLS fragment signers beyond the LLS table path.
+`test_security_provider.py` gate it.
+**Gap register + Gap A closure plan** are recorded in
+`wiki/analyses/own-ca-and-content-protection.md`.  Gap A (operation lifecycle:
+persistent revocation, real `revoke`, key rollover/renewal) closes with a new
+**Django + PostgreSQL CA management app inside `openatsc3-pki`** as an optional
+`[web]` extra: PostgreSQL is the source of truth, keys stay on disk (0600, DB
+holds path + fingerprint), PEMs are materialized on `export`, admin-only v1,
+and the first data migration imports the existing CA tree.  Gaps B–F
+(ROUTE/MMTP SLS signing, receiver content decryptor, HSM/offline root) remain
+open.
+**Gap A Phase 1 is done (2026-10-04):** `openatsc3_ca/` + `catalog/` are in
+place under `openatsc3-pki` (optional `[web]` extra); PostgreSQL is
+authoritative, keys stay on disk, `revoke` now persists and turns the stapled
+OCSP to `revoked`, and `export`/`import-tree` move the DB and PEM tree in both
+directions.  Migrations `0001`–`0003` (incl. the spec seed and the legacy-tree
+data migration, idempotent + reversible).  Tests: `make test-ca` = 55 pass
+(embedded rootless PostgreSQL 16.2 via `pgserver`, no Docker needed; a
+`docker-compose.yml` is provided for deployment), including the end-to-end gate
+where a revoked signer makes the receiver's `verify_certification_data` fail;
+`make test-pki` (44) stays database-free.  Phase 2 (rollover/renew, `publish`)
+and Phase 3 (content keys, DRF, HSM) remain.
 
 ### High Priority
 1. **ROUTE/MMTP -> media** (A/331/A/344) — **implemented and validated

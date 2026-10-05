@@ -1,0 +1,32 @@
+# Docker Compose for the OpenATSC3 CA management app (PostgreSQL).
+#
+#   docker compose up -d db
+#   export OPENATSC3_CA_DATABASE_URL=postgresql://openatsc3:openatsc3@localhost:5432/openatsc3_ca
+#   python manage.py migrate
+#   python manage.py createsuperuser
+#   python manage.py runserver
+#
+# Under rootless podman:  podman-compose up -d db   (or `podman compose`).
+# This file is optional: `make test-ca` and a bare `manage.py migrate` use an
+# embedded, rootless PostgreSQL and need no container runtime.
+
+services:
+  db:
+    image: postgres:16
+    container_name: openatsc3-ca-db
+    environment:
+      POSTGRES_DB: openatsc3_ca
+      POSTGRES_USER: openatsc3
+      POSTGRES_PASSWORD: openatsc3
+    ports:
+      - "5432:5432"
+    volumes:
+      - openatsc3-ca-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openatsc3 -d openatsc3_ca"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  openatsc3-ca-pgdata:

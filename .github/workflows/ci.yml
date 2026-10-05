@@ -63,3 +63,25 @@ jobs:
 
       - name: Test openatsc3-pki
         run: make test-pki
+
+  test-ca:
+    name: openatsc3-pki (Django + PostgreSQL CA)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      # The CA app is an optional extra.  pgserver ships a rootless embedded
+      # PostgreSQL (16.2) that runs as the runner user, so no service container
+      # and no Docker are needed in CI.
+      - name: Create CA environment and install extras
+        run: |
+          uv venv --python 3.12 .venv-ca
+          uv pip install --python .venv-ca/bin/python -e './openatsc3-pki[web,test-ca]'
+
+      - name: Test CA app
+        run: make -C openatsc3-pki test-ca CA_PYTHON="$PWD/.venv-ca/bin/python"

@@ -1,6 +1,11 @@
 # Virtual environments (single workspace env is .venv)
 .venv/
 venv/
+.venv-ca/
+
+# CA app local data (embedded PostgreSQL cluster + materialized PEM tree)
+.pgdata*/
+ca-tree/
 
 # Build artefacts
 build/
