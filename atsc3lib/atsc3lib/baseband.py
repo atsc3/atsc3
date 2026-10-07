@@ -26,6 +26,9 @@ Reference: ATSC A/322:2024-04, Section 5.2.2.
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
+import bisect
+
+
 #: Base Field bit layout.
 MODE_BIT = 7
 POINTER_LSB_BITS = 7
@@ -137,3 +140,64 @@ def payload_stream(packets) -> Tuple[bytes, List[int]]:
         parts.append(pkt.payload)
         offset += len(pkt.payload)
     return b"".join(parts), sorted(set(boundaries))
+
+
+def build_baseband_packet(payload: bytes, pointer: int = 0,
+                          ofi: int = OFI_NONE) -> bytes:
+    """Build one 2-byte-Base-Field Baseband Packet (A/322 5.2.2, TX inverse).
+
+    MODE = 1 with a 13-bit Pointer split across the Base Field (7 LSBs) and the
+    first byte's 6 MSBs; the remaining 2 bits are the OFI.  The default
+    ``pointer = 0, ofi = OFI_NONE`` marks an ALP packet starting at the first
+    payload byte with no Optional Field, which is the inverse of
+    :func:`split_baseband_packet` for that shape.
+    """
+    if not 0 <= pointer < (1 << (POINTER_LSB_BITS + POINTER_MSB_BITS)):
+        raise ValueError("pointer does not fit its 13 bits")
+    if ofi != OFI_NONE:
+        raise NotImplementedError(
+            "only OFI_NONE Baseband Packets are built so far")
+    payload = bytes(payload)
+    base = bytes([
+        0x80 | (pointer & ((1 << POINTER_LSB_BITS) - 1)),
+        ((pointer >> POINTER_LSB_BITS) << OFI_BITS) | (ofi & ((1 << OFI_BITS) - 1)),
+    ])
+    return base + payload
+
+
+def pack_baseband_stream(stream: bytes, boundaries, kpayload: int,
+                         base_field_bytes: int = 2) -> List[bytes]:
+    """Split an ALP stream into fixed-length Baseband Packets (A/322 5.2.2).
+
+    Inverse of :func:`payload_stream`: the stream is cut into ``kpayload``-byte
+    packets, each prefixed by a Base Field whose 13-bit Pointer is the offset
+    of the first ALP boundary at or after the packet's payload start, or
+    ``POINTER_NONE`` when no ALP packet begins inside it.  This is the general
+    case; one ALP packet may span several packets.
+
+    Args:
+        stream: the concatenated ALP packet bytes.
+        boundaries: byte offsets in ``stream`` where an ALP packet starts.
+        kpayload: Baseband Packet length in bytes (FEC payload capacity).
+        base_field_bytes: 1 or 2 (MODE); 2 is the 13-bit-pointer form.
+    """
+    stream = bytes(stream)
+    bounds = sorted(set(int(b) for b in boundaries))
+    if base_field_bytes != 2:
+        raise NotImplementedError("only 2-byte Base Fields are built")
+    body = kpayload - base_field_bytes
+    if body <= 0:
+        raise ValueError("kpayload too small for the Base Field")
+    if len(stream) % body:
+        stream = stream + b"\x00" * (body - len(stream) % body)
+    packets: List[bytes] = []
+    pos = 0
+    while pos < len(stream):
+        chunk = stream[pos:pos + body]
+        nxt = bisect.bisect_left(bounds, pos)
+        pointer = bounds[nxt] - pos \
+            if nxt < len(bounds) and bounds[nxt] < pos + len(chunk) \
+            else POINTER_NONE
+        packets.append(build_baseband_packet(chunk, pointer=pointer))
+        pos += len(chunk)
+    return packets

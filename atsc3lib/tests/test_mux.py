@@ -20,29 +20,39 @@ DATA = Path(__file__).parent / "data"
 ROUTE_DG = DATA / "route_media_flow_8321.dg.gz"
 
 
-def _route():
-    return reassemble(read_datagram_dump(gzip.decompress(ROUTE_DG.read_bytes())))
+@pytest.fixture(scope="module")
+def route():
+    """The reassembled RF33 ROUTE media flow (expensive: read+reassemble once)."""
+    if not ROUTE_DG.exists():
+        pytest.skip("ROUTE fixture not present")
+    return reassemble(
+        read_datagram_dump(gzip.decompress(ROUTE_DG.read_bytes())))
 
 
-def _video():
-    return mp4.select_track(mp4.build_tracks(_route()), b"vide")
+@pytest.fixture(scope="module")
+def decoded(route):
+    """The decoded AC-4 tracks (the dominant cost: decode once per module)."""
+    pytest.importorskip("ac4bindings")
+    return audio.decode_media(route)
+
+
+@pytest.fixture(scope="module")
+def video(route):
+    return mp4.select_track(mp4.build_tracks(route), b"vide")
 
 
 class TestSelectAudio:
-    def test_longest_by_default(self):
-        dg = _route()
-        decoded = audio.decode_media(dg)
+    def test_longest_by_default(self, decoded):
         chosen = mux.select_audio(decoded)
         assert chosen is not None
         assert chosen.frame_count == max(d.frame_count for d in decoded)
 
-    def test_explicit_track(self):
-        decoded = audio.decode_media(_route())
+    def test_explicit_track(self, decoded):
         chosen = mux.select_audio(decoded, track_id=30)
         assert chosen is not None and chosen.track_id == 30
 
-    def test_unknown_track_is_none(self):
-        assert mux.select_audio(audio.decode_media(_route()), track_id=999) is None
+    def test_unknown_track_is_none(self, decoded):
+        assert mux.select_audio(decoded, track_id=999) is None
 
     def test_empty_is_none(self):
         assert mux.select_audio([]) is None
@@ -50,10 +60,8 @@ class TestSelectAudio:
 
 @pytest.mark.skipif(not ROUTE_DG.exists(), reason="ROUTE fixture not present")
 class TestMuxAv:
-    def test_writes_playable_av(self, tmp_path):
+    def test_writes_playable_av(self, tmp_path, video, decoded):
         av = pytest.importorskip("av")
-        video = _video()
-        decoded = audio.decode_media(_route())
         out = str(tmp_path / "av.mp4")
         assert mux.mux_av(video, decoded, out) == out
 
@@ -70,13 +78,11 @@ class TestMuxAv:
                 video_packets += 1
         assert video_packets == video.samples
 
-    def test_output_is_fragmented_for_streaming(self, tmp_path):
+    def test_output_is_fragmented_for_streaming(self, tmp_path, video, decoded):
         # The combined file must be a fragmented MP4 (empty moov up front, then
         # moof/mdat) so a player can open it while it is still being written and
         # a truncated live file remains valid past its last fragment.
         pytest.importorskip("av")
-        video = _video()
-        decoded = audio.decode_media(_route())
         out = str(tmp_path / "av.mp4")
         mux.mux_av(video, decoded, out)
         data = Path(out).read_bytes()
@@ -86,10 +92,8 @@ class TestMuxAv:
         assert moov != -1 and moof != -1
         assert moov < moof
 
-    def test_audio_is_non_silent(self, tmp_path):
+    def test_audio_is_non_silent(self, tmp_path, video, decoded):
         av = pytest.importorskip("av")
-        video = _video()
-        decoded = audio.decode_media(_route())
         out = str(tmp_path / "av.mp4")
         mux.mux_av(video, decoded, out)
 
@@ -111,8 +115,7 @@ class TestMuxAv:
         # encoder (audible scratching).  The mux must normalise.
         assert clipped == 0
 
-    def test_no_audio_returns_none(self, tmp_path):
-        video = _video()
+    def test_no_audio_returns_none(self, tmp_path, video):
         out = str(tmp_path / "av.mp4")
         assert mux.mux_av(video, [], out) is None
 

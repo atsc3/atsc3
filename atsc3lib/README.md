@@ -93,6 +93,27 @@ atsc3-live --file out/capture.iq --plp 16 --units 12 --max-frames 1
 atsc3-live --freq 587e6 --plp 0                 # live SDRplay
 ```
 
+## Synthetic transmission
+
+`atsc3-transmit` (and `atsc3lib.transmit`) builds a frame from scratch — the
+inverse of the receive chain — and writes IQ that `atsc3-decode` reads back.
+The first rung is 8K / GI1536 / SP4_2 / QPSK 2/15 (the RF33 PLP-16 shape),
+carrying A/331 LLS tables. The middle layer `atsc3lib/ofdm` is the single
+façade over the A/322 tables that both RX and TX consume.
+
+```bash
+atsc3-transmit -o out/tx.iq --fmt cs8                # default SLT
+atsc3-decode out/tx.iq --rate 6912000 --fmt cs8 --plp 16
+atsc3-transmit -o out/tx.iq --signed --ca-dir out/ca  # own-CA CDT+SMT hook
+atsc3-decode out/tx.iq --rate 6912000 --fmt cs8 --trust-root out/ca/root/root.cert.pem --require-signature
+```
+
+`--signed` builds the own-CA CertificationData (`0x06`) and SignedMultiTable
+(`0x07`) with the optional `openatsc3-pki` package and signs the SLT; without
+it the transmitter emits an unsigned SLT. `drmpeg/gr-atsc3` is documented as
+the optional independent transmit referee, never a dependency.
+
+
 ```python
 from atsc3lib.live import FileIqSource, LiveConfig, LiveReceiver
 

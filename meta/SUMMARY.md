@@ -209,6 +209,12 @@ touching the receiver; verdicts attach to `DecodedStreams.verification` and
 `atsc3-decode` gained `--trust-root` / `--security-provider` /
 `--require-signature`; `atsc3lib/tests/test_security.py` and
 `test_security_provider.py` gate it.
+**Synthetic transmission (2026-10-06):** the PKI synthetic gate is being
+upgraded from A/331-layer injection to a full PHY loopback — an in-repo
+transmitter (`atsc3lib/transmit.py` + the `atsc3lib/ofdm.py` middle tables
+layer) generates a frame carrying the signed SLT/CDT/SMT, and the receiver's
+real `decode_signaling -> decode_plp_streams -> verify_streams` path verifies
+it.  See the Synthetic Transmission section above and [[transmitter]].
 **Gap register + Gap A closure plan** are recorded in
 `wiki/analyses/own-ca-and-content-protection.md`.  Gap A (operation lifecycle:
 persistent revocation, real `revoke`, key rollover/renewal) closes with a new
@@ -231,6 +237,23 @@ migration, idempotent + reversible).  Tests: `make test-ca` = 11 pass
 where a revoked signer makes the receiver's `verify_certification_data` fail;
 `make test-pki` (44) stays database-free.  Phase 2 (rollover/renew, `publish`)
 and Phase 3 (content keys, DRF, HSM) remain.
+
+### Synthetic Transmission (new workstream, 2026-10-06)
+2. **Transmitter + certificate hook** — the inverse of the validated receive
+   chain, built **in-repo** so every table/primitive is reused (no copied
+   constants, no new dependency).  A middle layer `atsc3lib/ofdm.py` is the
+   single façade over the existing A/322 tables (`spec`, `pilot_tables`,
+   `preamble`, `pilot_reference`, `payload._pilots`) so RX geometry and TX
+   symbol assembly cannot drift.  First geometry is **8K / GI1536 / SP4_2 /
+   QPSK 2/15 / short frame** (the RF33 PLP-16 shape).  `drmpeg/gr-atsc3`
+   (`000b86a3`) stays a pinned **external referee**, never a dependency
+   (GPL-3 GNU Radio C++ OOT).  The certificate hook is carried over the
+   **real PHY**: build SLT+CDT+SignedMultiTable via `openatsc3_pki`, modulate
+   with `transmit.build_frame` / `modulate_plp`, then
+   `decode_signaling` -> `decode_plp_streams` -> `security.verify_streams`.
+   Plan: `meta/OPENATSC3_PROJECT_PLAN.md` Phase 4; page
+   [[transmitter]].  Loopback is a real gate but still *synthetic content*
+   (RF33 carries neither our signature nor DRM), so the PKI exemption stands.
 
 ### High Priority
 1. **ROUTE/MMTP -> media** (A/331/A/344) — **implemented and validated

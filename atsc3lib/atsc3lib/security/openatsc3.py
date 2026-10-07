@@ -19,6 +19,7 @@ from .base import SecurityProvider, SignableTable, TableVerdict, register
 def _require_pki():
     try:
         import openatsc3_pki
+        from openatsc3_pki import cdt, cms, verify  # noqa: F401
     except Exception as exc:  # pragma: no cover - exercised without the extra
         raise RuntimeError(
             "the 'openatsc3' security provider needs the openatsc3-pki package "

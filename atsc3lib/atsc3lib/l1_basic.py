@@ -98,6 +98,24 @@ class L1BasicCodec:
         parts.append(permuted[:n_tail])
         return np.concatenate(parts)
 
+    def bits_to_cells(self, tx_bits: np.ndarray) -> np.ndarray:
+        """Map a transmitted L1-Basic bit sequence to QPSK cells (TX inverse).
+
+        Inverse of :meth:`cells_to_llr`: A/322 6.5.2.10 block-interleaves the
+        ``n_tx`` bits into a 2-column block (column 0 = y0, column 1 = y1) read
+        row-wise, so the symbol stream is ``[y0...y1...]``.  Annex C.1.1 then
+        maps ``(y0, y1)`` to I/Q.
+        """
+        if self.eta != 2:
+            raise NotImplementedError(
+                "L1-Basic TX cell mapping is implemented for QPSK modes only")
+        n_cells = self.n_tx // self.eta
+        tx = np.asarray(tx_bits, dtype=np.uint8)[:n_cells * 2]
+        if len(tx) != n_cells * 2:
+            raise ValueError(f"expected {n_cells * 2} L1-Basic tx bits")
+        y0, y1 = tx[:n_cells], tx[n_cells:]
+        return ((1.0 - 2.0 * y1) + 1j * (1.0 - 2.0 * y0)) / np.sqrt(2.0)
+
     # --- decode ----------------------------------------------------------
     def cells_to_llr(self, cells: np.ndarray) -> np.ndarray:
         """QPSK demap (A/322 Annex C.1.1) + 6.5.2.10 block de-interleave.

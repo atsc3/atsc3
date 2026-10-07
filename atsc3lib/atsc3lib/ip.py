@@ -177,3 +177,46 @@ def parse_lls(payload: bytes) -> Optional[LlsTable]:
                     group_id=group_id,
                     group_count_minus1=group_count_minus1,
                     table_version=table_version)
+
+
+def ipv4_checksum(header: bytes) -> int:
+    """One's-complement Internet checksum of a 20-byte IPv4 header (RFC 1071)."""
+    header = bytes(header)
+    if len(header) % 2:
+        header += b"\x00"
+    total = 0
+    for i in range(0, len(header), 2):
+        total += (header[i] << 8) | header[i + 1]
+    while total >> 16:
+        total = (total & 0xFFFF) + (total >> 16)
+    return (~total) & 0xFFFF
+
+
+def build_ipv4_udp(src_ip: bytes, dst_ip: bytes, src_port: int, dst_port: int,
+                   payload: bytes, ttl: int = 64, ident: int = 0
+                   ) -> bytes:
+    """Build an unfragmented IPv4/UDP datagram (TX inverse of the reassembler).
+
+    Produces the exact bytes :class:`IpReassembler` parses back, with the UDP
+    length and the IPv4 header checksum filled in (RFC 791/768).
+    """
+    payload = bytes(payload)
+    udp = (bytes([src_port >> 8, src_port & 0xFF,
+                  dst_port >> 8, dst_port & 0xFF])
+           + (UDP_HEADER_BYTES + len(payload)).to_bytes(2, 'big')
+           + b"\x00\x00" + payload)
+    total_length = IPV4_MIN_HEADER + len(udp)
+    header = (bytes([(IPV4_VERSION << 4) | (IPV4_MIN_HEADER // 4),
+                     0, total_length >> 8, total_length & 0xFF,
+                     ident >> 8, ident & 0xFF, 0, 0,
+                     ttl, PROTO_UDP, 0, 0])
+              + bytes(src_ip) + bytes(dst_ip))
+    csum = ipv4_checksum(header)
+    header = header[:10] + bytes([csum >> 8, csum & 0xFF]) + header[12:]
+    return header + udp
+
+
+def build_lls_udp(ls_payload: bytes, src_ip: bytes = b"\xac\x12\x81\x14",
+                  src_port: int = 1234) -> bytes:
+    """Wrap an LLS table payload in the A/331 LLS IPv4/UDP datagram (TX side)."""
+    return build_ipv4_udp(src_ip, LLS_IP, src_port, LLS_PORT, ls_payload)

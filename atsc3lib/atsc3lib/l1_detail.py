@@ -66,6 +66,28 @@ def preamble_block_deinterleave(cells: np.ndarray, n_symbols: int) -> np.ndarray
     return out
 
 
+def preamble_block_interleave(cells: np.ndarray, n_symbols: int) -> np.ndarray:
+    """Apply the A/322 7.2.5.2 L1-Detail Preamble block interleaver (TX).
+
+    Transmit inverse of :func:`preamble_block_deinterleave`: the ``Lc*Lr``
+    leading cells are read row-wise as ``M`` and written column-wise
+    (``y(i*Lr+j) = M(j*Lc+i)``); any remainder is appended unchanged.
+    """
+    m = np.asarray(cells)
+    total = len(m)
+    lr = total // n_symbols
+    full = n_symbols * lr
+    out = np.empty(total, dtype=m.dtype)
+    if full:
+        idx = np.arange(full)
+        i = idx % n_symbols
+        j = idx // n_symbols
+        out[i * lr + j] = m[idx]
+    if total > full:
+        out[full:] = m[full:]
+    return out
+
+
 class L1DetailCodec:
     """Encode/decode one L1-Detail FEC frame for a given mode.
 
@@ -151,6 +173,23 @@ class L1DetailCodec:
         return np.concatenate(parts)
 
     # --- decode ----------------------------------------------------------
+    def bits_to_cells(self, tx_bits: np.ndarray) -> np.ndarray:
+        """Map a transmitted L1-Detail bit sequence to QPSK cells (TX inverse).
+
+        Inverse of :meth:`cells_to_llr`: 6.5.2.10 block-interleaves the ``n_tx``
+        bits into two columns read row-wise, then Annex C.1.1 maps ``(y0, y1)``
+        to I/Q.
+        """
+        if self.eta != 2:
+            raise NotImplementedError(
+                "L1-Detail TX cell mapping is implemented for QPSK modes only")
+        n_cells = self.n_tx // self.eta
+        tx = np.asarray(tx_bits, dtype=np.uint8)[:n_cells * 2]
+        if len(tx) != n_cells * 2:
+            raise ValueError(f"expected {n_cells * 2} L1-Detail tx bits")
+        y0, y1 = tx[:n_cells], tx[n_cells:]
+        return ((1.0 - 2.0 * y1) + 1j * (1.0 - 2.0 * y0)) / np.sqrt(2.0)
+
     def cells_to_llr(self, cells: np.ndarray) -> np.ndarray:
         """QPSK demap (Annex C.1.1) + 6.5.2.10 block de-interleave."""
         z = np.asarray(cells)

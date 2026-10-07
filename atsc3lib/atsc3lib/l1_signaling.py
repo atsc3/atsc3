@@ -218,7 +218,13 @@ class L1Detail:
 
 def _parse_plp(r: _BitReader, n_rf: int, first_sub_mimo: int,
                l1d_mimo: int, subframe_index: int) -> PLPConfig:
-    """Parse one L1D_plp entry (A/322 Table 9.8)."""
+    """Parse one L1D_plp entry (A/322 Table 9.8).
+
+    Every field read is kept in ``raw`` (including ones with no dedicated
+    dataclass field, e.g. the sub-slice and channel-bonding syntax), so
+    :mod:`atsc3lib.l1_signaling_encode` can serialise a parsed entry exactly.
+    """
+    praw: Dict[str, int] = {}
     plp_id = r.read('L1D_plp_id', 6)
     lls = r.read('L1D_plp_lls_flag', 1)
     layer = r.read('L1D_plp_layer', 2)
@@ -238,23 +244,30 @@ def _parse_plp(r: _BitReader, n_rf: int, first_sub_mimo: int,
         ti_start = r.read('L1D_plp_CTI_fec_block_start', 22)
     if n_rf > 0:
         n_bonded = r.read('L1D_plp_num_channel_bonded', 3)
+        praw['L1D_plp_num_channel_bonded'] = n_bonded
         if n_bonded > 0:
-            r.read('L1D_plp_channel_bonding_format', 2)
-            for _ in range(n_bonded):
-                r.read('L1D_plp_bonded_rf_id', 3)
+            praw['L1D_plp_channel_bonding_format'] = r.read(
+                'L1D_plp_channel_bonding_format', 2)
+            praw['L1D_plp_bonded_rf_id'] = [
+                r.read('L1D_plp_bonded_rf_id', 3) for _ in range(n_bonded)]
     if (subframe_index == 0 and first_sub_mimo == 1) or \
             (subframe_index > 0 and l1d_mimo == 1):
-        r.read('L1D_plp_mimo_stream_combining', 1)
-        r.read('L1D_plp_mimo_IQ_interleaving', 1)
-        r.read('L1D_plp_mimo_PH', 1)
+        praw['L1D_plp_mimo_stream_combining'] = r.read(
+            'L1D_plp_mimo_stream_combining', 1)
+        praw['L1D_plp_mimo_IQ_interleaving'] = r.read(
+            'L1D_plp_mimo_IQ_interleaving', 1)
+        praw['L1D_plp_mimo_PH'] = r.read('L1D_plp_mimo_PH', 1)
     hti_inter = hti_ti = hti_fec = hti_cell = None
     cti_depth = cti_start_row = ti_extended = None
     ldm_level = None
     if layer == 0:
         plp_type = r.read('L1D_plp_type', 1)
+        praw['L1D_plp_type'] = plp_type
         if plp_type == 1:
-            r.read('L1D_plp_num_subslices', 14)
-            r.read('L1D_plp_subslice_interval', 24)
+            praw['L1D_plp_num_subslices'] = r.read(
+                'L1D_plp_num_subslices', 14)
+            praw['L1D_plp_subslice_interval'] = r.read(
+                'L1D_plp_subslice_interval', 24)
         if ti_mode in (1, 2) and mod == 0:
             ti_extended = r.read('L1D_plp_TI_extended_interleaving', 1)
         if ti_mode == 1:
@@ -263,12 +276,14 @@ def _parse_plp(r: _BitReader, n_rf: int, first_sub_mimo: int,
         elif ti_mode == 2:
             hti_inter = r.read('L1D_plp_HTI_inter_subframe', 1)
             hti_ti = r.read('L1D_plp_HTI_num_ti_blocks', 4)
-            r.read('L1D_plp_HTI_num_fec_blocks_max', 12)
+            praw['L1D_plp_HTI_num_fec_blocks_max'] = r.read(
+                'L1D_plp_HTI_num_fec_blocks_max', 12)
             if hti_inter == 0:
                 hti_fec = r.read('L1D_plp_HTI_num_fec_blocks', 12)
             else:
-                for _ in range(hti_ti):
+                praw['L1D_plp_HTI_num_fec_blocks'] = [
                     r.read('L1D_plp_HTI_num_fec_blocks', 12)
+                    for _ in range(hti_ti)]
             hti_cell = r.read('L1D_plp_HTI_cell_interleaver', 1)
     else:
         ldm_level = r.read('L1D_plp_ldm_injection_level', 5)
@@ -281,7 +296,7 @@ def _parse_plp(r: _BitReader, n_rf: int, first_sub_mimo: int,
         hti_num_fec_blocks=hti_fec, hti_cell_interleaver=hti_cell,
         cti_depth=cti_depth, cti_start_row=cti_start_row,
         ti_extended_interleaving=ti_extended,
-        ldm_injection_level=ldm_level, raw={})
+        ldm_injection_level=ldm_level, raw=praw)
 
 
 def parse_l1_detail(bits, l1b: L1Basic) -> L1Detail:
@@ -293,18 +308,21 @@ def parse_l1_detail(bits, l1b: L1Basic) -> L1Detail:
     num_rf = r.read('L1D_num_rf', 3)
     raw['L1D_version'] = version
     raw['L1D_num_rf'] = num_rf
+    bonded_bsids = []
     for _ in range(1, num_rf + 1):
-        r.read('L1D_bonded_bsid', 16)
+        bonded_bsids.append(r.read('L1D_bonded_bsid', 16))
         r.read('reserved', 3)
+    raw['L1D_bonded_bsid'] = bonded_bsids
 
     time_sec: Optional[int] = None
     if l1b.time_info_flag != 0:
         time_sec = r.read('L1D_time_sec', 32)
-        r.read('L1D_time_msec', 10)
+        raw['L1D_time_sec'] = time_sec
+        raw['L1D_time_msec'] = r.read('L1D_time_msec', 10)
         if l1b.time_info_flag != 1:
-            r.read('L1D_time_usec', 10)
+            raw['L1D_time_usec'] = r.read('L1D_time_usec', 10)
             if l1b.time_info_flag != 2:
-                r.read('L1D_time_nsec', 10)
+                raw['L1D_time_nsec'] = r.read('L1D_time_nsec', 10)
 
     subframes = []
     # L1B_num_subframes is the count minus one.

@@ -11,7 +11,7 @@ WHUT mux, SDRplay RSP1B) and an independent receiver.
 
 | Package | Kind | Purpose |
 |---|---|---|
-| [`atsc3lib/`](atsc3lib/) | Python + C extensions | Physical-layer demodulation, L1 signalling, data-PLP decoding, and A/331 service discovery / ROUTE / MMTP / media. The dense kernels (normalized-min-sum LDPC and BCH, max-log demapper, frequency-interleaver address generator) are built in as `atsc3lib._bindings` |
+| [`atsc3lib/`](atsc3lib/) | Python + C extensions | Physical-layer demodulation and **synthetic transmission** (the inverse chain), L1 signalling, data-PLP decoding, and A/331 service discovery / ROUTE / MMTP / media. The dense kernels (normalized-min-sum LDPC and BCH, max-log demapper, frequency-interleaver address generator) are built in as `atsc3lib._bindings` |
 | [`sdrbindings/`](sdrbindings/) | C extension | SDRplay capture over SoapySDR |
 | [`ac4bindings/`](ac4bindings/) | C extension | AC-4 (ETSI TS 103 190) decoder kernels |
 | [`openatsc3-pki/`](openatsc3-pki/) | Python (optional) | Own CA, signed-signaling verification, and CENC content protection (A/360). Dependency-light: only `cryptography` + `asn1crypto` |

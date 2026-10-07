@@ -389,6 +389,182 @@ def live_main(argv=None):
     return 0 if receiver.stats.acquisitions else 1
 
 
+def transmit_main(argv=None):
+    """CLI: build a synthetic ATSC 3.0 frame and write it as IQ.
+
+    The transmitter is the inverse of the receive chain (see
+    :mod:`atsc3lib.transmit`).  By default it emits one 8K/GI1536/SP4_2
+    QPSK 2/15 frame carrying a minimal A/331 SLT, which ``atsc3-decode`` reads
+    back.  ``--lls TABLE_ID:FILE`` adds raw LLS table payloads (with a
+    generated SLT unless ``--no-slt``); ``--signed`` builds the own-CA
+    CertificationData + SignedMultiTable with ``openatsc3_pki`` and signs the
+    SLT (the certificate hook).
+    """
+    import numpy as np
+
+    from . import transmit
+
+    parser = argparse.ArgumentParser(
+        description="ATSC 3.0 synthetic transmitter: build a frame, write IQ")
+    parser.add_argument('-o', '--out', required=True,
+                        help='output IQ file path')
+    parser.add_argument('--fmt', default='cs8', choices=['cs8', 'cs16', 'cf32'],
+                        help='output sample format (default: cs8)')
+    parser.add_argument('--bsid', type=int, default=transmit.DEFAULT_BSID,
+                        help=f'bsid to signal (default {transmit.DEFAULT_BSID})')
+    parser.add_argument('--plp', type=int, default=16,
+                        help='PLP id to signal and carry the payload in')
+    parser.add_argument('--lls', action='append', default=[], metavar='ID:FILE',
+                        help='add an LLS table: table_id (hex/dec) prefix and '
+                             'a file holding the table payload (repeatable)')
+    parser.add_argument('--no-slt', action='store_true',
+                        help='do not add the default standalone SLT (0x01)')
+    parser.add_argument('--signed', action='store_true',
+                        help='own-CA certificate hook: build CDT (0x06) + '
+                             'SignedMultiTable (0x07) with openatsc3_pki and '
+                             'sign the SLT')
+    parser.add_argument('--ca-dir', default=None,
+                        help='existing openatsc3-pki CA tree for --signed '
+                             '(default: create a throwaway CA)')
+    parser.add_argument('--slt-bsid', type=int, default=None,
+                        help='bsid the default SLT advertises (default --bsid)')
+    parser.add_argument('--frame-interval', type=int, default=0,
+                        help='bootstrap frame_interval (A/321)')
+    parser.add_argument('-v', '--verbose', action='store_true')
+
+    args = parser.parse_args(argv)
+    if args.verbose:
+        logging.basicConfig(level=logging.DEBUG)
+
+    tables = []
+    slt = None
+    if not args.no_slt or args.signed:
+        slt = _default_slt(args.slt_bsid or args.bsid)
+    if args.signed:
+        tables = _signed_tables(args, slt) + tables
+    if slt is not None:
+        tables = tables + [slt]
+    for spec_str in args.lls:
+        table_id, path = spec_str.split(':', 1)
+        with open(path, 'rb') as fh:
+            body = fh.read()
+        tables.append(bytes([int(table_id, 0), 0, 0, 1]) + body)
+    if not tables:
+        tables = [slt] if slt else []
+
+    frame, plp = transmit.build_lls_frame(
+        tables, bsid=args.bsid, plp_id=args.plp,
+        frame_interval=args.frame_interval)
+    _write_iq(args.out, frame.iq, args.fmt)
+    print(f"Wrote {args.out}: {len(frame.iq)} samples "
+          f"({len(frame.iq) / spec.MAIN_RATE_HZ * 1000:.3f} ms), "
+          f"structure {frame.structure}, PLP {plp.plp_id}, "
+          f"{plp.size} cells, {len(tables)} LLS table(s), fmt {args.fmt}")
+    print(f"  decode with: atsc3-decode {args.out} --rate {spec.MAIN_RATE_HZ:.0f} "
+          f"--fmt {args.fmt} --plp {args.plp}")
+    return 0
+
+
+def _default_slt(bsid: int) -> bytes:
+    """A minimal A/331 SLT table payload (header included), gzip-compressed."""
+    import gzip
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<SLT xmlns="tag:atsc.org,2016:XMLSchemas/ATSC3/Delivery/SLT/1.0/" '
+        f'bsid="{bsid}"><Service serviceId="1" majorChannelNo="32" '
+        'minorChannelNo="1" shortServiceName="OpenATSC3">'
+        '<BroadcastSvcSignaling slsProtocol="1" '
+        'slsDestinationIpAddress="239.255.32.1" slsDestinationUdpPort="8321"/>'
+        '</Service></SLT>'
+    ).encode()
+    return bytes([0x01, 0, 0, 1]) + gzip.compress(xml)
+
+
+def _signed_tables(args, slt: bytes) -> list:
+    """Build the own-CA CDT (0x06) + SignedMultiTable (0x07) (A/360)."""
+    import datetime as dt
+    import gzip
+    import tempfile
+
+    pki = __import__('openatsc3_pki', fromlist=['ca', 'cdt', 'keys', 'ocsp'])
+    from openatsc3_pki import ca, cdt, keys, ocsp
+    from openatsc3_pki.x509 import (
+        SubjectInfo, issue_ocsp_responder, issue_signaling_signer)
+
+    ca_dir = args.ca_dir
+    if ca_dir is None:
+        ca_dir = tempfile.mkdtemp(prefix='atsc3-tx-ca-', dir='out')
+    a = ca.CertificateAuthority(ca_dir)
+    try:
+        a.load_root()
+    except Exception:
+        a.init_root(common_name="OpenATSC3 Root CA")
+        a.issue_issuing()
+    signer = a.issue_broadcaster("OpenATSC3", (args.bsid,))
+    signer_key = a.load_broadcaster_key("OpenATSC3")
+    now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+
+    cdt_key = keys.generate()
+    cdt_cert = issue_signaling_signer(
+        SubjectInfo(common_name="OpenATSC3-CDT-Signer",
+                    organizational_unit="ATSC Broadcast Signaling Signer",
+                    organization="OpenATSC3"),
+        cdt_key, a.load_issuing(), a.load_issuing_key(), (args.bsid,))
+    resp_key = keys.generate()
+    resp_cert = issue_ocsp_responder(
+        SubjectInfo(common_name="OpenATSC3 OCSP",
+                    organizational_unit="ATSC OCSP Responder",
+                    organization="OpenATSC3"),
+        resp_key, a.load_issuing(), a.load_issuing_key())
+    store = ocsp.StatusStore()
+
+    def resp(cert, issuer):
+        return ocsp.respond(cert, issuer, resp_cert, resp_key, store,
+                            this_update=now,
+                            next_update=now + dt.timedelta(hours=20))
+
+    table = cdt.build(
+        chain=[a.load_issuing().der()], signing_cert=signer,
+        cdt_signer_cert=cdt_cert, cdt_signer_key=cdt_key,
+        ocsp_responses=[resp(a.load_issuing(), a.load_issuing()),
+                        resp(signer, a.load_issuing()),
+                        resp(cdt_cert, a.load_issuing())],
+        signing_time=now)
+    smt = cdt.signed_multitable(
+        [cdt.LlsTable(0x01, 1, gzip.compress(_slt_xml(args.bsid))),
+         cdt.LlsTable(0x03, 1, b"\x00" * 8)],
+        signer, signer_key, signing_time=now)
+    return [bytes([0x06, 0, 0, 1]) + table.gzip_bytes(),
+            bytes([0x07, 0, 0, 1]) + smt]
+
+
+def _slt_xml(bsid: int) -> bytes:
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<SLT xmlns="tag:atsc.org,2016:XMLSchemas/ATSC3/Delivery/SLT/1.0/" '
+        f'bsid="{bsid}"><Service serviceId="1" majorChannelNo="32" '
+        'minorChannelNo="1" shortServiceName="OpenATSC3">'
+        '<BroadcastSvcSignaling slsProtocol="1" '
+        'slsDestinationIpAddress="239.255.32.1" slsDestinationUdpPort="8321"/>'
+        '</Service></SLT>'
+    ).encode()
+
+
+def _write_iq(path: str, iq, fmt: str) -> None:
+    """Write complex IQ to a cs8/cs16 interleaved or cf32 file."""
+    import numpy as np
+    peak = float(np.max(np.abs(iq))) if len(iq) else 1.0
+    if fmt == 'cf32':
+        data = np.stack([iq.real, iq.imag], axis=1).astype(np.float32)
+    else:
+        scale = (2 ** 7 - 1) / peak if fmt == 'cs8' else (2 ** 15 - 1) / peak
+        dtype = np.int8 if fmt == 'cs8' else np.int16
+        data = np.stack([np.round(iq.real * scale),
+                         np.round(iq.imag * scale)], axis=1).astype(dtype)
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    data.tofile(path)
+
+
 def main(argv=None):
     return decode_main(argv)
 

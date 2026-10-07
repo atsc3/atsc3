@@ -6,6 +6,7 @@ certificate formats and validation rules defined in A/360 and A/331, but owns
 its root and its content-protection scheme independently.
 """
 
-from . import ca, cms, content, keys, oids, sda, verify, x509
+from . import ca, cdt, cms, content, keys, ocsp, oids, sda, verify, x509
 
-__all__ = ["ca", "cms", "content", "keys", "oids", "sda", "verify", "x509"]
+__all__ = ["ca", "cdt", "cms", "content", "keys", "ocsp", "oids", "sda",
+           "verify", "x509"]

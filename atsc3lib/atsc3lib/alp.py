@@ -317,3 +317,35 @@ def parse_alp(stream: bytes,
               boundaries: Iterable[int] = ()) -> Tuple[List[AlpPacket], AlpStats]:
     """De-encapsulate a Baseband Packet payload stream (A/330 5.1)."""
     return AlpWalker(stream=stream, boundaries=list(boundaries)).run()
+
+
+def build_single_ipv4_packet(payload: bytes, sid: Optional[int] = None) -> bytes:
+    """Build one whole-packet IPv4 ALP packet (A/330 5.1.2.1, TX inverse).
+
+    ``packet_type = 000`` (IPv4), ``payload_configuration = 0`` (single whole
+    packet).  Lengths up to 2047 fit the Base Header alone; longer payloads set
+    the length-MSB flag and carry a control byte (A/330 Table 5.4).  The
+    optional ``sub_stream_identification()`` byte is emitted when ``sid`` is
+    given (A/330 5.1.3.1).
+    """
+    payload = bytes(payload)
+    ptype, pc = PT_IPV4, PC_SINGLE
+    length = len(payload)
+    sif = 1 if sid is not None else 0
+    base = (ptype << (BASE_HEADER_BYTES * 8 - PACKET_TYPE_BITS)) \
+        | (pc << (LENGTH_BITS + PAYLOAD_CONFIG_BITS))
+    if length <= SINGLE_PAYLOAD_MAX:
+        out = (base | length).to_bytes(BASE_HEADER_BYTES, 'big')
+        if sif:
+            out += bytes([(0 << SINGLE_MSB_SHIFT) | (sif << SINGLE_SIF_SHIFT),
+                          sid])
+    else:
+        if length > MAX_ALP_PAYLOAD:
+            raise ValueError(f"ALP payload {length} exceeds {MAX_ALP_PAYLOAD}")
+        msb, lsb = length >> LENGTH_BITS, length & ((1 << LENGTH_BITS) - 1)
+        head = base | (1 << LENGTH_BITS) | lsb
+        out = head.to_bytes(BASE_HEADER_BYTES, 'big') \
+            + bytes([(msb << SINGLE_MSB_SHIFT) | (sif << SINGLE_SIF_SHIFT)])
+        if sif:
+            out += bytes([sid])
+    return out + payload

@@ -20,6 +20,16 @@ Guidance for opencode when working in this repository (ATSC 3.0 receiver).
 - Work in `./atsc3/atsc3lib` (the git repo).
 - Tests: `make test` (or `source venv/bin/activate && python -m pytest -q`)
 - No linter/typechecker is configured; `py_compile` is the only check.
+- **Scratch and temporary files go in `./out/`, not `/tmp`.** `out/` is
+  gitignored; use `out/` subfolders for ad-hoc scripts, captures and
+  experiments so they stay with the project.
+- **Run pytest from a fresh folder, not the repo root.** `python -m pytest`
+  puts the cwd on `sys.path[0]`, and the repo's outer `ac4bindings/` directory
+  (no `__init__.py`) then shadows the installed editable `ac4bindings`
+  package as a namespace package (`ac4bindings.__file__ is None`), so the
+  AC-4 tests fail on `from . import synthesise`. The `pytest` console script
+  and `make test` are not affected; for a raw module invocation use
+  `cd out/scratch && <venv>/bin/python -m pytest <repo>/atsc3lib/tests -q`.
 ## Scope
 
 - **All processing must be bounded. This runs on live air feeds, so no code
@@ -89,6 +99,26 @@ Guidance for opencode when working in this repository (ATSC 3.0 receiver).
   (DB authoritative, keys on disk); B = ROUTE/MMTP SLS signing; C = receiver
   content-protection parse/decrypt; D = HSM/offline root; E = receiver seam;
   F = docs drift.
+
+## Synthetic transmission (TX)
+
+- **The transmitter is the inverse of the validated receiver, in-repo.**  Reuse
+  every table and primitive (`bootstrap.generate_bootstrap`, LDPC/BCH `encode`,
+  the interleavers, `nuc.points`, the pilot reference); do not re-derive
+  constants or copy values.  The middle layer `atsc3lib/ofdm.py` is the single
+  façade over the A/322 tables (`spec`, `pilot_tables`, `preamble`,
+  `pilot_reference`, `payload._pilots`) that both RX geometry and TX symbol
+  assembly consume, so they cannot drift.
+- **`drmpeg/gr-atsc3` (`000b86a3`) is the optional external referee, not a
+  dependency.**  It is a GPL-3 GNU Radio C++ OOT module (not pip-installable,
+  needs GNU Radio 3.10); it is already pinned as a table witness.  Use it to
+  generate an independent capture for `atsc3-decode`, never import it.
+- **First rung geometry:** 8K / GI1536 / SP4_2 / QPSK 2/15 / short frame (the
+  RF33 PLP-16 shape).  Gate a TX rung by RX loopback
+  (`decode_signaling` -> `decode_plp_streams`, plus the security verify for the
+  certificate hook) under AWGN and a static multipath channel.  The loopback is
+  a real gate but is still *synthetic content*; it does not air-prove our
+  signature.  See `wiki/analyses/transmitter.md`.
 
 ## Code style
 

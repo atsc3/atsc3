@@ -37,6 +37,7 @@ atsc3-decode = "atsc3lib.cli:decode_main"
 atsc3-live = "atsc3lib.cli:live_main"
 atsc3-media = "atsc3lib.cli:media_main"
 atsc3-capture = "atsc3lib.capture:main"
+atsc3-transmit = "atsc3lib.cli:transmit_main"
 
 [tool.setuptools.packages.find]
 where = ["."]

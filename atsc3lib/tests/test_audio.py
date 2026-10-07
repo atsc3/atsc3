@@ -30,9 +30,30 @@ def ac4_track():
     pytest.skip("no complete AC-4 track in the fixture")
 
 
+@pytest.fixture(scope="module")
+def ac4_decoded(ac4_track):
+    """The 5.1 AC-4 tracks decoded once (decode is the expensive step)."""
+    pytest.importorskip("ac4bindings")
+    return audio.decode_track(ac4_track)
+
+
+@pytest.fixture(scope="module")
+def mmtp_decoded():
+    pytest.importorskip("ac4bindings")
+    dg = read_datagram_dump(gzip.decompress(MMTP_DG.read_bytes()))
+    return audio.decode_media(reassemble(dg))
+
+
+@pytest.fixture(scope="module")
+def route_decoded():
+    pytest.importorskip("ac4bindings")
+    dg = read_datagram_dump(gzip.decompress(ROUTE_DG.read_bytes()))
+    return audio.decode_media(reassemble(dg))
+
+
 class TestAudio:
-    def test_decode(self, ac4_track):
-        decoded = audio.decode_track(ac4_track)
+    def test_decode(self, ac4_decoded):
+        decoded = ac4_decoded
         assert decoded is not None
         assert decoded.sample_rate == 48000
         assert decoded.channels == ("L", "R", "C", "lfe", "Ls", "Rs")
@@ -50,16 +71,15 @@ class TestAudio:
             samples = ()
         assert audio.decode_track(_Other()) is None
 
-    def test_decode_media(self):
-        dg = read_datagram_dump(gzip.decompress(MMTP_DG.read_bytes()))
-        decoded = audio.decode_media(reassemble(dg))
+    def test_decode_media(self, mmtp_decoded):
+        decoded = mmtp_decoded
         assert [d.track_id for d in decoded] == [13, 14]
         by_id = {d.track_id: d for d in decoded}
         assert by_id[13].channels == ("L", "R", "C", "lfe", "Ls", "Rs")
         assert by_id[14].channels == ("L", "R")
 
-    def test_wav_round_trip(self, ac4_track, tmp_path):
-        decoded = audio.decode_track(ac4_track)
+    def test_wav_round_trip(self, ac4_decoded, tmp_path):
+        decoded = ac4_decoded
         path = str(tmp_path / "ac4.wav")
         audio.write_wav(path, decoded)
         with wave.open(path) as w:
@@ -67,10 +87,10 @@ class TestAudio:
             assert w.getframerate() == 48000
             assert w.getnframes() == decoded.frame_count
 
-    def test_normalized_pcm_does_not_clip(self, ac4_track):
+    def test_normalized_pcm_does_not_clip(self, ac4_decoded):
         # The decoder emits integer-scale samples; normalized_pcm scales the
         # shared peak to WAV_PEAK so the WAV and the mux cannot clip.
-        planar, gain = audio.normalized_pcm(audio.decode_track(ac4_track))
+        planar, gain = audio.normalized_pcm(ac4_decoded)
         assert planar.shape[0] == 6
         assert np.isclose(np.abs(planar).max(), audio.WAV_PEAK)
         assert int((np.abs(planar) > 1.0).sum()) == 0
@@ -90,9 +110,8 @@ class TestRouteAudio:
     samples-only track has no init and cannot be recognised as AC-4 on its own.
     The RF33 ROUTE lanes (TSI 20 and 30) are stereo ``channel_pair_element``."""
 
-    def test_decode_media_pairs_route_init(self):
-        dg = read_datagram_dump(gzip.decompress(ROUTE_DG.read_bytes()))
-        decoded = audio.decode_media(reassemble(dg))
+    def test_decode_media_pairs_route_init(self, route_decoded):
+        decoded = route_decoded
         assert [d.track_id for d in decoded] == [20, 30]
         for d in decoded:
             assert d.channels == ("L", "R")
@@ -104,9 +123,8 @@ class TestRouteAudio:
             lengths = {len(v) for v in d.pcm.values()}
             assert len(lengths) == 1, lengths
 
-    def test_route_wav_round_trip(self, tmp_path):
-        dg = read_datagram_dump(gzip.decompress(ROUTE_DG.read_bytes()))
-        decoded = audio.decode_media(reassemble(dg))[0]
+    def test_route_wav_round_trip(self, route_decoded, tmp_path):
+        decoded = route_decoded[0]
         path = str(tmp_path / "route_ac4.wav")
         audio.write_wav(path, decoded)
         with wave.open(path) as w:

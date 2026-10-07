@@ -28,6 +28,12 @@ Phase 3 (Week 13+):   Certificate Authority Platform
                       ├─ Broadcaster enrollment
                       ├─ Device provisioning
                       └─ Commercial deployment
+
+Phase 4 (new):        Synthetic Transmission (TX)
+                      ├─ Middle OFDM tables layer (ofdm.py)
+                      ├─ L1 serializer + TX data chain
+                      ├─ build_frame() waveform (8K QPSK 2/15 first)
+                      └─ atsc3-transmit CLI; cert hook over the real PHY
 ```
 
 > **Market reality (2026-10-05) — read before Phase 3.**  A competing CA cannot
@@ -362,6 +368,65 @@ Enterprise Tier: Custom
 
 ---
 
+## Phase 4: Synthetic Transmission (TX)
+
+**Status: new workstream (2026-10-06), in progress.**  Not part of the original
+three phases.  It has two purposes: (1) a **loopback gate** that exercises the
+whole receive chain on data we generated, and (2) the **on-air path for the
+own-CA certificate hook** — the PKI track's signed signaling can be carried in a
+generated waveform instead of being injected only at the A/331 layer.
+
+### Design decisions
+
+- **Reuse the receiver.**  The transmitter is the **inverse of the validated
+  receive chain**; every table and primitive already exists (bootstrap
+  generation, LDPC/BCH `encode`, scrambler, group/bit/cell/twisted
+  interleavers, NUC alphabets, pilot reference, frequency interleaver).
+  Nothing is re-derived and no constant is copied.
+- **Middle tables layer: `atsc3lib/ofdm.py`.**  A single façade over
+  `spec` / `pilot_tables` / `preamble` / `pilot_reference` /
+  `payload._pilots` that resolves an `OfdmGeometry` value object and exposes
+  pilots, data-cell counts, carrier origin, common/additional CP and
+  preamble-pilot values for any (FFT, GI, pattern, cred).  RX's geometry
+  helpers and TX's symbol builders both consume it, so the two sides cannot
+  drift; the receiver path keeps its existing helpers and the façade only
+  **delegates** to them.
+- **`drmpeg/gr-atsc3` is the external referee, not a dependency.**  It is a
+  GPL-3 GNU Radio C++ OOT module (not pip-installable, needs GNU Radio 3.10),
+  already pinned at `000b86a3` as a table witness.  Whoever has GNU Radio can
+  generate a capture with it and feed it to `atsc3-decode` byte-for-byte.
+
+### Phases
+
+1. **L1 serialize + TX cells.**  `l1_signaling_encode.py` (`BitWriter`,
+   `l1_basic_to_bits` Table 9.2, `l1_detail_to_bits` Table 9.8) and the
+   `bits_to_cells` / `preamble_block_interleave` inverses of the codecs.
+   Gate: parse the RF33 L1 fixtures → serialize → encode → decode → parse,
+   field/value identity + `crc32_ok`.
+2. **Frame transmitter.**  `transmit.py`: preamble/data symbol assembly,
+   `build_frame`, `modulate_plp`.  First geometry **8K / GI1536 / SP4_2 /
+   QPSK 2/15 / short frame** (the RF33 PLP-16 shape).  Gate: `decode_signaling`
+   CRC-OK and parsed L1 equals the input; `decode_plp_streams` recovers the
+   injected Baseband Packets, under AWGN and a static multipath channel.
+3. **Encapsulation builders + certificate hook.**  `ip.build_udp_datagram` +
+   `ipv4_checksum`, `alp.build_single_ipv4_packet`,
+   `baseband.build_baseband_packet`.  Gate: build SLT(0x01)+CDT(0x06)+
+   SignedMultiTable(0x07) via `openatsc3_pki`, carry them through
+   `build_frame` → `decode_signaling` → `decode_plp_streams` →
+   `security.verify_streams`; negative gates (wrong root, tampered SMT) fail.
+4. **CLI.**  `atsc3-transmit` writes cs8/cs16 IQ, symmetric with
+   `atsc3-decode` / `atsc3-capture`.
+
+### Scope
+
+Bounded by construction (the signalled frame length); no unbounded scan.  A
+TX→RX loopback is a legitimate loopback gate but is still **synthetic
+content**: it does not prove RF33 carries our signature/DRM, so the PKI
+exemption stands.  Out of scope this workstream: LDM/CTI/MIMO transmit, 16K/32K,
+normal frames (follow-ons).
+
+---
+
 ## Hardware Options
 
 ### Option A: HackRF One (~$320) ← RECOMMENDED
@@ -457,6 +522,22 @@ Deploy: openatsc3.com (or your domain)
 Sales: Contact broadcasters in your region
 ```
 
+### Phase 4 (new): Synthetic Transmission
+
+```
+Deliverables:
+✓ atsc3lib/ofdm.py — middle tables/geometry layer (shared RX/TX)
+✓ L1 serializer (Tables 9.2/9.8) + TX bits->cells inverses
+✓ build_frame() waveform, 8K QPSK 2/15 first; modulate_plp()
+✓ A/330 ALP / IPv4-UDP / A/322 BBP packet builders
+✓ atsc3-transmit CLI (cs8/cs16 IQ)
+✓ Certificate hook carried over the real PHY (TX -> decode -> verify)
+✓ drmpeg/gr-atsc3 documented as the optional external referee
+
+Gate: TX -> RX loopback (decode_signaling + decode_plp_streams + security)
+under AWGN and a static multipath channel; bounded by frame length.
+```
+
 ---
 
 ## Claude's Role (By Phase)
@@ -545,6 +626,16 @@ Week 12:
 ✓ $50K+ annual revenue
 ✓ Production-grade infrastructure
 ✓ White-label option deployed
+```
+
+### Phase 4 (Synthetic Transmission)
+```
+✓ RX chain decodes a self-generated frame (decode_signaling CRC-OK)
+✓ Injected Baseband Packets/ALP recovered by decode_plp_streams
+✓ Signed CDT/SMT verified through the real PHY (verify_streams ok)
+✓ Negative gates fail (wrong root, tampered SMT)
+✓ atsc3-transmit writes an IQ file atsc3-decode can read back
+✓ No new external dependency; bounded by construction
 ```
 
 ---
