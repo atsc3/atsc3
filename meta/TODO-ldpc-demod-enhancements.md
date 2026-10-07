@@ -82,16 +82,20 @@ reach real-time; a cleanup rung, not a live enabler.
 - B2 changes the C API (must stay backward-compatible); B3 is the riskiest.
 - Track A does not move the clean-signal number.
 
-## Follow-on (separate, not part of A/B): sub-second live on 16 cores / GPU
+## Follow-on (separate, not part of A/B): sub-second live on 8 cores / GPU
 
 Broader throughput discussion, not yet scoped as tasks:
-- Mandatory serial-floor fixes (both CPU and GPU routes): cache
+- **Prerequisite (mandatory, CPU side): serial-floor fixes.**  With the GPU on
+  FEC the remaining per-frame CPU work is the blocker, not core count: cache
   `DataPlpChain`/tables/plans once per lock; hold the L1 lock across frames
   (acquisition re-run is ~14 s/window); pipeline capture<->decode<->network;
-  parallel/batched pool build; speed up the 2.7 s BCH stage.
+  batch/parallel pool build; speed up the 2.7 s BCH stage.
 - True-live target is < 247 ms/frame (RF33 period); sub-second (< 1 s) is
   near-live and still drops frames.
-- GPU route: raw CUDA extension (`gpubindings`) via `try: import`, built with
-  nvcc targeting sm_61 (GTX 1080 Ti, CUDA 12.x — CUDA 13 dropped Pascal);
+- GPU route: raw CUDA extension (`gpubindings`) via `try: import`,
   differential-tested against the C/NumPy kernels. CPU remains the required
   fallback. GPU accelerates demap+LDPC+BCH only, not the serial floors.
+- Hardware target selected (single box, **8-core CPU + modern NVIDIA GPU**,
+  e.g. Ryzen 7 7700X + RTX 5070 12 GB / 672 GB/s, current Blackwell drivers):
+  see `meta/HARDWARE-live-rig.md`.  The 16-core requirement was dropped — with
+  GPU FEC, core count is not the live lever.

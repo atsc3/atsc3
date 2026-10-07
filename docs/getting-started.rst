@@ -59,8 +59,9 @@ the C kernels (LDPC + BCH, max-log demapper, frequency interleaver) as
 accelerators.
 
 The default install deliberately leaves out the ``openatsc3-ca`` Django app;
-use ``make install-all`` if you want it.  The certificate/PKI track is out of
-scope for this guide.
+use ``make install-all`` if you want it.  The PKI track (create a CA, issue a
+certificate, transmit and verify) is covered separately in
+:doc:`pki-transmission`.
 
 Verify the install
 ------------------
@@ -175,4 +176,6 @@ Next steps
 
 * :doc:`sdrplay` — front-end setup, gain, and troubleshooting.
 * :doc:`live-streaming` — current live-reception status and host requirements.
+* :doc:`pki-transmission` — create a CA, issue a certificate, and transmit and
+  verify a signed frame.
 * :doc:`python-api` — the Python entry points.

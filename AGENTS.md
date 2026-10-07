@@ -13,7 +13,9 @@ Guidance for opencode when working in this repository (ATSC 3.0 receiver).
   `wiki/log.md` and `wiki/index.md`; the wiki is the source of truth when
   `SUMMARY.md` drifts.  `meta/TODO-ldpc-demod-enhancements.md` holds the
   queued LDPC fast-path and demapper/pool speed-up work (bit-identical, plus
-  the separate sub-second-live follow-on).
+  the separate sub-second-live follow-on); `meta/HARDWARE-live-rig.md` records
+  the selected single-box live target (8-core CPU + modern NVIDIA GPU,
+  RTX 5070 class; bandwidth-bound, VRAM not the constraint).
 
 ## Environment
 

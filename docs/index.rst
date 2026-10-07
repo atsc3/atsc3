@@ -30,6 +30,14 @@ The workspace is a small monorepo:
    * - ``ac4bindings``
      - C extension
      - AC-4 (ETSI TS 103 190) audio decoder kernels.
+   * - ``openatsc3-pki``
+     - Python (optional)
+     - Own certificate authority, signed-signaling verification, and CENC
+       content protection (A/360); used by the transmitter's certificate hook.
+   * - ``openatsc3-ca``
+     - Python (optional)
+     - CA operator application: a Django + PostgreSQL ledger over
+       ``openatsc3-pki`` (persistent revocation, rollover, admin UI).
 
 Start here
 ----------
@@ -40,6 +48,8 @@ Start here
   ``sdrbindings``), tune gain, and troubleshoot capture.
 * :doc:`live-streaming` — the current state of *live* (real-time) reception,
   the frame budget, and what CPU/host is needed to keep up.
+* :doc:`pki-transmission` — create a certificate authority, issue a
+  broadcaster certificate, transmit a signed frame, and receive and verify it.
 
 Reference
 ---------
@@ -61,6 +71,7 @@ Reference
    getting-started
    sdrplay
    live-streaming
+   pki-transmission
    python-api
 
 Indices and tables

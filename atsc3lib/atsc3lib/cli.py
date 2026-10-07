@@ -426,6 +426,9 @@ def transmit_main(argv=None):
     parser.add_argument('--ca-dir', default=None,
                         help='existing openatsc3-pki CA tree for --signed '
                              '(default: create a throwaway CA)')
+    parser.add_argument('--signer', default=None,
+                        help='broadcaster signer name to use from --ca-dir '
+                             '(default: OpenATSC3, issued on demand)')
     parser.add_argument('--slt-bsid', type=int, default=None,
                         help='bsid the default SLT advertises (default --bsid)')
     parser.add_argument('--frame-interval', type=int, default=0,
@@ -500,8 +503,12 @@ def _signed_tables(args, slt: bytes) -> list:
     except Exception:
         a.init_root(common_name="OpenATSC3 Root CA")
         a.issue_issuing()
-    signer = a.issue_broadcaster("OpenATSC3", (args.bsid,))
-    signer_key = a.load_broadcaster_key("OpenATSC3")
+    signer_name = args.signer or "OpenATSC3"
+    try:
+        signer = a.load_broadcaster(signer_name)
+    except Exception:
+        signer = a.issue_broadcaster(signer_name, (args.bsid,))
+    signer_key = a.load_broadcaster_key(signer_name)
     now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
 
     cdt_key = keys.generate()
