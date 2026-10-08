@@ -59,6 +59,23 @@ def _av():
     return av
 
 
+def mux_error_types() -> tuple:
+    """The exception types :func:`mux_av` raises, for callers that guard it.
+
+    PyAV reports decode/encode/mux failures as ``av.error.FFmpegError``; that
+    type is added only when ``av`` is importable so callers need no hard PyAV
+    dependency.  The rest cover the missing-extra path (:class:`ImportError`,
+    :class:`RuntimeError` from :func:`_av`) and the local I/O of writing the
+    output file (:class:`OSError`, :class:`ValueError`).
+    """
+    errors = (ImportError, RuntimeError, OSError, ValueError)
+    try:
+        from av.error import FFmpegError
+    except ImportError:
+        return errors
+    return errors + (FFmpegError,)
+
+
 def select_audio(decoded, track_id: Optional[int] = None):
     """The audio track to mux: ``track_id`` when given, else the longest.
 

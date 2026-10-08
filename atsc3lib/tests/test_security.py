@@ -170,3 +170,36 @@ def test_no_cdt_fails(wired):
                                      now=wired["now"])
     assert not report.ok
     assert "CertificationData" in report.reason
+
+
+def test_malformed_cdt_is_a_verdict_not_a_crash(wired):
+    # A garbage 0x06 body is attacker-supplied: it must produce a not-ok
+    # verdict, not propagate a parse error to the caller.
+    streams = _streams([_lls_datagram(bytes([0x06, 0, 0, 1]) + b"not a cdt")])
+    report = security.verify_streams(streams, [wired["ca"].load_root()],
+                                     now=wired["now"])
+    assert not report.ok
+    assert "parse" in report.reason
+
+
+def test_malformed_smt_is_a_verdict_not_a_crash(wired):
+    streams = _streams([wired["datagrams"][0],
+                        _lls_datagram(bytes([0x07, 0, 0, 1]) + b"")])
+    report = security.verify_streams(streams, [wired["ca"].load_root()],
+                                     now=wired["now"])
+    assert not report.ok
+
+
+def test_unexpected_provider_error_propagates(wired, monkeypatch):
+    # The narrowed handlers must not swallow an unexpected error type: a
+    # genuine bug in the parser should surface, not become a silent verdict.
+    from openatsc3_pki import cdt as cdt_mod
+
+    def boom(_data):
+        raise RuntimeError("programmer error")
+
+    monkeypatch.setattr(cdt_mod, "parse_certification_data", boom)
+    streams = _streams(wired["datagrams"])
+    with pytest.raises(RuntimeError, match="programmer error"):
+        security.verify_streams(streams, [wired["ca"].load_root()],
+                                now=wired["now"])

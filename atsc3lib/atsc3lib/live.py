@@ -327,6 +327,7 @@ class LiveMediaSink:
         self.audio_track_id = audio_track_id
         self.datagrams = []
         self.dropped = 0
+        self.mux_skipped: List[tuple] = []
 
     def __call__(self, streams) -> None:
         """``LiveReceiver.on_streams`` callback: collect the run's datagrams."""
@@ -381,6 +382,7 @@ class LiveMediaSink:
                     mux.mux_av(video, decoded, path,
                                audio_track_id=chosen.track_id)
                     written.append(path)
-                except Exception:
-                    pass
+                except mux.mux_error_types() as exc:
+                    self.mux_skipped.append(
+                        (path, f"{type(exc).__name__}: {exc}"))
         return written

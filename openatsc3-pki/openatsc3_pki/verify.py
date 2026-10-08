@@ -131,7 +131,7 @@ def _verify_ocsp(der: bytes, cert: Certificate, issuer: Certificate,
     """Validate one OCSP response for ``cert`` (A/360 5.2.2.6 item 5)."""
     try:
         resp = _ocsp.load_der_ocsp_response(der)
-    except Exception as exc:  # malformed
+    except ValueError as exc:  # malformed DER (asn1crypto wraps its parse error)
         return f"malformed OCSP response: {exc}"
     if resp.response_status is not _ocsp.OCSPResponseStatus.SUCCESSFUL:
         return "OCSP response status not successful"
@@ -237,7 +237,7 @@ def verify_certification_data(cdt, trust_roots: Sequence[Certificate],
     sig = None
     try:
         sig = cms.parse(cdt.cmssigneddata)
-    except Exception as exc:
+    except ValueError as exc:
         return Verdict(False, f"cannot parse CMSSignedData: {exc}"), None
     cdt_signer = by_ski.get(sig.signer_ski)
     if cdt_signer is None:
@@ -259,7 +259,7 @@ def verify_certification_data(cdt, trust_roots: Sequence[Certificate],
     for der in cdt.ocsp_responses:
         try:
             r = _ocsp.load_der_ocsp_response(der)
-        except Exception:
+        except ValueError:
             continue
         for single in r.responses:
             ocsp_by_serial.setdefault(single.serial_number, der)
@@ -315,7 +315,7 @@ def verify_signed_message(cms_der: bytes, signed_extent: bytes, keys: CertifiedK
     now = _now(now)
     try:
         sig = cms.parse(cms_der)
-    except Exception as exc:
+    except ValueError as exc:
         return Verdict(False, f"cannot parse signature: {exc}")
 
     # 3c: the signing cert's SKI matches CurrentCert or NextCert.
@@ -379,7 +379,7 @@ def _ocsp_for(keys: CertifiedKeys, serial: int) -> Optional[bytes]:
     for der in keys.cdt.ocsp_responses:
         try:
             r = _ocsp.load_der_ocsp_response(der)
-        except Exception:
+        except ValueError:
             continue
         if any(s.serial_number == serial for s in r.responses):
             return der

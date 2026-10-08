@@ -133,6 +133,12 @@ Guidance for opencode when working in this repository (ATSC 3.0 receiver).
   `dict`/`tuple` returns for anything with named fields. Include a
   docstring naming the spec source (section/table) for each field.
 - **No comments** unless asked.
+- **Never catch the base exception.** Do not write `except Exception:`,
+  `except BaseException:`, or bare `except:`. Catch the specific exception
+  type you mean (e.g. `FileNotFoundError`) or test the precondition (e.g.
+  `os.path.exists`) instead. Swallowing every exception hides real corruption,
+  permission and I/O failures behind a silent fallback; the only legitimate use
+  of a broad handler is a documented top-level boundary that logs and re-raises.
 - **Cite the spec.** Modules and non-obvious functions carry a docstring
   with the A/322 (or A/327) section and a note on what test vector or
   capture gates the logic. Reference the oracle (`/tmp/opencode/felbs-ref`)

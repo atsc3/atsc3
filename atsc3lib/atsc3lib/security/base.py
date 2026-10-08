@@ -203,7 +203,7 @@ def _ensure_builtin() -> None:
     _BUILTIN_LOADED = True
     try:
         from . import openatsc3  # noqa: F401  (registers itself)
-    except Exception:
+    except ImportError:
         # Without a provider package the receiver still runs; verification
         # simply reports "no provider available".
         pass

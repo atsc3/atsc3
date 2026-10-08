@@ -150,7 +150,7 @@ def decode_main(argv=None):
                                                   args.security_provider)
                 report = security.verify_streams(streams, roots,
                                                  provider=args.security_provider)
-            except Exception as exc:
+            except (KeyError, RuntimeError, OSError, ValueError) as exc:
                 print(f"  Security: unavailable ({exc})")
                 return 2 if args.require_signature else 0
             print(f"  Security [{report.provider}]: {security.describe(report)}")
@@ -256,9 +256,9 @@ def _write_audio(args, media):
     """
     try:
         from . import audio
-    except Exception:
+        decoded = audio.decode_media(media)
+    except ImportError:
         return []
-    decoded = audio.decode_media(media)
     for d in decoded:
         flow = d.dst_ip.replace('.', '_')
         name = (f"{flow}_{d.dst_port}_{d.transport}_"
@@ -280,7 +280,7 @@ def _write_av(args, tracks, decoded_audio):
     """
     try:
         from . import mux
-    except Exception:
+    except ImportError:
         return
     video = next((t for t in tracks if t.handler == b"vide"), None)
     if video is None or not decoded_audio:
@@ -295,8 +295,8 @@ def _write_av(args, tracks, decoded_audio):
     try:
         mux.mux_av(video, decoded_audio, path,
                    audio_track_id=chosen.track_id)
-    except Exception as exc:
-        print(f"  A/V mux skipped: {exc}")
+    except mux.mux_error_types() as exc:
+        print(f"  A/V mux skipped: {type(exc).__name__}: {exc}")
         return
     print(f"  {name}: video track {video.track_id} + AC-4 track "
           f"{chosen.track_id} ({'x'.join(chosen.channels)})")
@@ -385,6 +385,8 @@ def live_main(argv=None):
               f"(dropped {sink.dropped} datagram(s))")
         for path in written:
             print(f"    {os.path.basename(path)}")
+        for path, reason in sink.mux_skipped:
+            print(f"    A/V mux skipped {os.path.basename(path)}: {reason}")
     source.close()
     return 0 if receiver.stats.acquisitions else 1
 
@@ -498,15 +500,15 @@ def _signed_tables(args, slt: bytes) -> list:
     if ca_dir is None:
         ca_dir = tempfile.mkdtemp(prefix='atsc3-tx-ca-', dir='out')
     a = ca.CertificateAuthority(ca_dir)
-    try:
-        a.load_root()
-    except Exception:
+    if not os.path.exists(a.root_cert_path):
         a.init_root(common_name="OpenATSC3 Root CA")
         a.issue_issuing()
     signer_name = args.signer or "OpenATSC3"
-    try:
+    signer_cert_path = os.path.join(a.broadcaster_dir(signer_name),
+                                    "signing.cert.pem")
+    if os.path.exists(signer_cert_path):
         signer = a.load_broadcaster(signer_name)
-    except Exception:
+    else:
         signer = a.issue_broadcaster(signer_name, (args.bsid,))
     signer_key = a.load_broadcaster_key(signer_name)
     now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)

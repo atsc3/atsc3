@@ -11,16 +11,26 @@ Reference: ATSC A/360 5.2.2.2 (CertificationData), 5.2.2.3 (LLS signatures),
 
 from __future__ import annotations
 
+import binascii
+import gzip
+import xml.etree.ElementTree as ET
 from typing import Optional, Sequence, Tuple
 
 from .base import SecurityProvider, SignableTable, TableVerdict, register
+
+#: Exceptions a malformed CertificationData / SignedMultiTable table raises
+#: while being parsed: bad gzip (``gzip.BadGzipFile`` = ``OSError`` / ``EOFError``),
+#: bad base64 (``binascii.Error`` = ``ValueError``), bad XML (``ParseError``), and
+#: the library's own structural ``ValueError`` (empty/truncated, A/331 6.7).
+_MALFORMED_TABLE = (ET.ParseError, binascii.Error, gzip.BadGzipFile, EOFError,
+                    ValueError)
 
 
 def _require_pki():
     try:
         import openatsc3_pki
         from openatsc3_pki import cdt, cms, verify  # noqa: F401
-    except Exception as exc:  # pragma: no cover - exercised without the extra
+    except ImportError as exc:  # pragma: no cover - exercised without the extra
         raise RuntimeError(
             "the 'openatsc3' security provider needs the openatsc3-pki package "
             "(pip install -e .[pki])") from exc
@@ -44,7 +54,7 @@ class OpenAtsc3Provider:
         pki = _require_pki()
         try:
             parsed = pki.cdt.parse_certification_data(table.data)
-        except Exception as exc:
+        except _MALFORMED_TABLE as exc:
             return TableVerdict(table.table_id, table.name, False,
                                 f"cannot parse CertificationData: {exc}"), None
         verdict, certified = pki.verify.verify_certification_data(
@@ -62,7 +72,7 @@ class OpenAtsc3Provider:
                                 "no verified CertificationData handle")
         try:
             multi = pki.cdt.parse_signed_multitable(table.data)
-        except Exception as exc:
+        except _MALFORMED_TABLE as exc:
             return TableVerdict(table.table_id, table.name, False,
                                 f"cannot parse SignedMultiTable: {exc}")
         verdict = pki.verify.verify_signed_message(
@@ -75,7 +85,9 @@ class OpenAtsc3Provider:
             sig = pki.cms.parse(multi.cms)
             signing_time = sig.signing_time
             signer_ski = sig.signer_ski
-        except Exception:
+        except ValueError:
+            # The CMS already parsed inside verify_signed_message; SigningTime/
+            # signer SKI are best-effort metadata on top of the verdict.
             pass
         return TableVerdict(table.table_id, table.name, verdict.ok,
                             verdict.reason, signing_time=signing_time,

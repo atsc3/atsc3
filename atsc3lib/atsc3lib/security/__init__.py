@@ -114,7 +114,9 @@ def verify_streams(streams, trust_roots: Sequence, now=None,
 def _attach(streams, report: SecurityReport) -> SecurityReport:
     try:
         streams.verification = report
-    except Exception:
+    except AttributeError:
+        # A caller may pass a read-only streams-like row; the verdict is still
+        # returned, it just cannot be stashed on the object (best effort).
         pass
     return report
 
