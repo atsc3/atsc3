@@ -20,6 +20,29 @@ from django.utils import timezone
 from .constants import CertStatus, Profile, RolloverState
 
 
+class Tenant(models.Model):
+    """A customer: one legal/account entity owning a per-tenant intermediate CA.
+
+    Disabling the customer means revoking the tenant intermediate under
+    ``tenants/<slug>/`` (see :class:`Certificate` ``Profile.TENANT_CA``); the
+    root and other tenants are untouched.  ``slug`` is the filesystem-safe key
+    used for the on-disk CA tree and management commands.
+    """
+
+    name = models.CharField(max_length=128, unique=True)
+    slug = models.SlugField(max_length=128, unique=True)
+    organization = models.CharField(max_length=255, blank=True)
+    active = models.BooleanField(default=True)
+    notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self) -> str:
+        return self.name
+
+
 class Broadcaster(models.Model):
     """A broadcast organization that owns signaling-signer certificates."""
 
@@ -27,6 +50,10 @@ class Broadcaster(models.Model):
     organization = models.CharField(max_length=255, blank=True)
     #: The registered bsid set for this organization (A/360 id-atsc-sdattr-bsid).
     bsids = ArrayField(models.IntegerField(), default=list, blank=True)
+    #: The customer this broadcaster belongs to (nullable for the legacy tree).
+    tenant = models.ForeignKey(
+        Tenant, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="broadcasters")
     notes = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -70,6 +97,8 @@ class Certificate(models.Model):
     #: Private key file (0600) and its SHA-256, for on-disk integrity checks.
     key_path = models.CharField(max_length=1024, blank=True)
     key_sha256 = models.CharField(max_length=64, blank=True)
+    #: KMS asymmetric key id/ARN when the key is held by KMS (no key file).
+    kms_key_id = models.CharField(max_length=2048, blank=True)
 
     status = models.CharField(
         max_length=16, choices=CertStatus.CHOICES, default=CertStatus.GOOD,
@@ -80,6 +109,11 @@ class Certificate(models.Model):
     #: The broadcaster this signer belongs to (signaling signers only).
     broadcaster = models.ForeignKey(
         Broadcaster, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="certificates")
+
+    #: The customer this certificate belongs to (per-tenant CAs and their leaves).
+    tenant = models.ForeignKey(
+        Tenant, null=True, blank=True, on_delete=models.PROTECT,
         related_name="certificates")
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -108,6 +142,8 @@ class Certificate(models.Model):
             errors["bsids"] = "a signaling signer must list at least one bsid"
         if self.profile == Profile.ROOT and self.parent_id is not None:
             errors["parent"] = "the root certificate has no parent"
+        if self.profile == Profile.TENANT_CA and self.tenant_id is None:
+            errors["tenant"] = "a tenant intermediate CA must belong to a tenant"
         if errors:
             raise ValidationError(errors)
 

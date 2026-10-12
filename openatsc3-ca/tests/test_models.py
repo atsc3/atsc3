@@ -27,6 +27,15 @@ def test_root_has_no_parent(ca):
     assert ca["root"].profile == "root"
 
 
+def test_tenant_ca_requires_a_tenant():
+    bad = Certificate(
+        serial="2", subject_dn="CN=t", profile="tenant-ca",
+        not_before=timezone.now(),
+        not_after=timezone.now() + dt.timedelta(days=1))
+    with pytest.raises(ValidationError):
+        bad.full_clean()
+
+
 def test_cert_validity_ordered():
     bad = Certificate(
         serial="1", subject_dn="CN=x", profile="root",

@@ -58,6 +58,10 @@ a = ca.CertificateAuthority("out/ca")
 a.init_root(); a.issue_issuing()
 signer = a.issue_broadcaster("WHUT", (540,))
 
+# Per-tenant intermediate CA signed by the root, signing that tenant's leaves:
+a.issue_tenant_ca("acme")
+acme_signer = a.issue_broadcaster("ACME-TV", (540,), tenant="acme")
+
 # Sign an LLS table set as a SignedMultiTable (A/331 6.7)
 smt = cdt.signed_multitable(
     [cdt.LlsTable(0x01, 13, slt_xml_bytes)],
@@ -113,6 +117,27 @@ through `openatsc3_pki.signer.Signer`, so the private key can live anywhere:
 The existing `keys.KeyPair` API is unchanged — any function that took a
 `KeyPair` also accepts a `Signer`, and KMS key specs map to the A/360
 curve/digest pairs (P-256/SHA-256, P-384/SHA-384; KMS has no P-521).
+
+## Per-tenant intermediate CAs
+
+The root only signs **per-tenant intermediate CAs**; each tenant intermediate
+signs that customer's leaves (CurrentCert, NextCert, CDT signer, OCSP
+responder).  Revoking one tenant intermediate disables only that customer.
+
+`CertificateAuthority` keeps the legacy single `issuing/` tree as the default,
+and additionally supports a tenant-scoped tree:
+
+```
+<base>/tenants/<tenant>/issuing.{cert,key}.pem
+<base>/tenants/<tenant>/broadcasters/<name>/signing.{cert,key}.pem
+```
+
+- `x509.issue_tenant_ca` and `ca.CertificateAuthority.issue_tenant_ca` create a
+  tenant CA signed by the root (A/360 5.3.1.3).
+- `issue_broadcaster(..., tenant="<slug>")` issues a leaf under that tenant's
+  intermediate; `load_tenant` / `load_tenant_key` read it back.
+- Any of these accept an external `Signer` (KMS) for the subject key and/or the
+  issuing key; when external, no private key file is written.
 
 ## CA operator application
 

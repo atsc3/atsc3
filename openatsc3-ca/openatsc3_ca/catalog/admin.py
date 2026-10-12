@@ -18,23 +18,33 @@ from .models import (
     PublishedSignaling,
     RolloverPlan,
     SpecReference,
+    Tenant,
 )
+
+
+@admin.register(Tenant)
+class TenantAdmin(admin.ModelAdmin):
+    list_display = ("name", "slug", "organization", "active", "created_at")
+    search_fields = ("name", "slug", "organization")
+    list_filter = ("active",)
 
 
 @admin.register(Broadcaster)
 class BroadcasterAdmin(admin.ModelAdmin):
-    list_display = ("name", "organization", "bsids", "created_at")
+    list_display = ("name", "organization", "tenant", "bsids", "created_at")
     search_fields = ("name", "organization")
+    list_filter = ("tenant",)
 
 
 @admin.register(Certificate)
 class CertificateAdmin(admin.ModelAdmin):
     list_display = ("common_name", "profile", "status", "serial",
-                    "not_after", "broadcaster")
-    list_filter = ("profile", "status", "broadcaster")
+                    "not_after", "tenant", "broadcaster")
+    list_filter = ("profile", "status", "tenant", "broadcaster")
     search_fields = ("serial", "common_name", "subject_dn", "ski", "aki")
     readonly_fields = ("serial", "ski", "aki", "subject_dn", "der_file",
-                       "key_path", "key_sha256", "created_at", "updated_at")
+                       "key_path", "key_sha256", "kms_key_id", "created_at",
+                       "updated_at")
     actions = ("revoke_certificates",)
 
     @admin.action(description="Revoke selected certificates")

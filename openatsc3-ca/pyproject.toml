@@ -27,6 +27,10 @@ test = [
     "pytest>=7.0",
     "pytest-django>=4.8",
 ]
+# Non-exportable KMS asymmetric keys for online private keys (production).
+kms = [
+    "openatsc3-pki[kms]",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

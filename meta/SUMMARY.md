@@ -238,6 +238,25 @@ where a revoked signer makes the receiver's `verify_certification_data` fail;
 `make test-pki` (44) stays database-free.  Phase 2 (rollover/renew, `publish`)
 and Phase 3 (content keys, DRF, HSM) remain.
 
+**Per-tenant intermediate CAs (2026-10-12).**  On top of the KMS `Signer` seam,
+the CA hierarchy is now **two-level as designed**: the offline root signs a
+**per-tenant intermediate CA** and each tenant intermediate signs that
+customer's leaves.  `openatsc3-pki` `CertificateAuthority` gained
+`issue_tenant_ca` / `load_tenant` / `load_tenant_key` and a tenant-scoped tree
+(`tenants/<tenant>/issuing.{cert,key}.pem`, `tenants/<tenant>/broadcasters/…`);
+the legacy single `issuing/` tree is kept as the default for back-compat.
+`issue_broadcaster`/`issue_issuing` accept an external `Signer` (KMS) for both
+the subject key and the issuing key, writing no key file when external.
+`openatsc3-ca` gained a `Tenant` model plus nullable `tenant` FKs on
+`Broadcaster`/`Certificate`, a new `Profile.TENANT_CA`, a `kms_key_id` column,
+`services.issue_tenant_ca` and `tenant=` threading through
+`issue_broadcaster`/`issue_ocsp_responder`, an `issue-tenant-ca` command, and
+migration `0004`.  Keys are recorded either as a 0600 file or as a KMS key id.
+The end-to-end gate now covers it: revoking a tenant intermediate makes the
+receiver's `verify_certification_data` fail, and revoking one tenant leaves
+another's CDT valid.  Tests: `make test-pki` = 56, `make test-ca` = 15.
+Offline-root ceremony and the root-in-separate-account split remain Phase 3.
+
 ### Synthetic Transmission (new workstream, 2026-10-06)
 2. **Transmitter + certificate hook** — the inverse of the validated receive
    chain, built **in-repo** so every table/primitive is reused (no copied

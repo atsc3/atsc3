@@ -39,6 +39,7 @@ from .models import (
     Certificate,
     OcspResponder,
     OcspResponse,
+    Tenant,
 )
 
 
@@ -117,7 +118,9 @@ class CertRecordResult:
 
 
 def record_certificate(cert: X509Certificate, profile: str, *,
-                       key_path: str = "", broadcaster: Optional[Broadcaster] = None,
+                       key_path: str = "", kms_key_id: str = "",
+                       broadcaster: Optional[Broadcaster] = None,
+                       tenant: Optional[Tenant] = None,
                        parent: Optional[Certificate] = None,
                        der_file: Optional[str] = None) -> CertRecordResult:
     """Persist an issued certificate's metadata into the ledger.
@@ -125,6 +128,8 @@ def record_certificate(cert: X509Certificate, profile: str, *,
     ``der_file`` defaults to ``<base>/certs/<serial>.der`` (written here).
     ``parent`` defaults to the certificate whose SKI matches this AKI, so
     imported chains link up without the caller passing parents explicitly.
+    A key is recorded either as a 0600 file (``key_path`` + its SHA-256) or as a
+    KMS key id (``kms_key_id``); a KMS key never touches the filesystem.
     """
     serial = str(cert.cert.serial_number)
     if der_file is None:
@@ -154,7 +159,9 @@ def record_certificate(cert: X509Certificate, profile: str, *,
         "parent": parent,
         "key_path": key_path,
         "key_sha256": sha256_file(key_path) if key_path else "",
+        "kms_key_id": kms_key_id,
         "broadcaster": broadcaster,
+        "tenant": tenant,
     }
     obj, created = Certificate.objects.update_or_create(
         serial=serial, defaults=defaults)
@@ -165,6 +172,61 @@ def record_certificate(cert: X509Certificate, profile: str, *,
 
 def _authority() -> pki_ca.CertificateAuthority:
     return pki_ca.CertificateAuthority(str(base_dir()))
+
+
+def _signer_for(key=None, kms_key_id: str = ""):
+    """An external signing backend: an explicit signer, or a KMS key id.
+
+    ``None`` means "use a local key on disk".  This is the single place the CA
+    app turns a stored key reference into a :class:`~openatsc3_pki.signer.Signer`
+    for anything other than the local test path.
+    """
+    if key is not None:
+        return key
+    if kms_key_id:
+        from openatsc3_pki.signer import KmsSigner
+        return KmsSigner.for_key(kms_key_id)
+    return None
+
+
+def _tenant_ca_cert(tenant: Tenant) -> Optional[Certificate]:
+    return (Certificate.objects
+            .filter(tenant=tenant, profile=Profile.TENANT_CA,
+                    status=CertStatus.GOOD)
+            .order_by("-created_at").first())
+
+
+def tenant_ca(tenant: Tenant) -> Certificate:
+    """The tenant's current intermediate CA row, regardless of status.
+
+    Used to rebuild a customer's bundle (which must keep referencing the CA
+    even after it is revoked) and to read the CA back for verification.
+    """
+    ca = (Certificate.objects
+          .filter(tenant=tenant, profile=Profile.TENANT_CA)
+          .order_by("-created_at").first())
+    if ca is None:
+        raise ValueError(f"tenant {tenant.slug!r} has no tenant CA")
+    return ca
+
+
+def _tenant_ca_signer(tenant: Tenant):
+    """The tenant CA's signer, or ``None`` to load its on-disk key."""
+    ca = _tenant_ca_cert(tenant)
+    if ca is None:
+        raise ValueError(f"tenant {tenant.slug!r} has no good tenant CA")
+    if ca.kms_key_id:
+        from openatsc3_pki.signer import KmsSigner
+        return KmsSigner.for_key(ca.kms_key_id)
+    return None
+
+
+def _responder_signer(responder: OcspResponder):
+    """The OCSP responder's signing key: a KMS backend or the on-disk key."""
+    if responder.certificate.kms_key_id:
+        from openatsc3_pki.signer import KmsSigner
+        return KmsSigner.for_key(responder.certificate.kms_key_id)
+    return pki_keys.load_private(responder.key_path)
 
 
 def issue_root(*, common_name: str = "OpenATSC3 Root CA",
@@ -193,52 +255,109 @@ def issue_issuing(*, common_name: str = "OpenATSC3 Issuing CA", days: int = 3650
     return result.certificate
 
 
-def issue_broadcaster(name: str, bsids: Iterable[int], *,
-                      common_name: Optional[str] = None, days: int = 365,
-                      organization: Optional[str] = None,
-                      actor: str = "system") -> Certificate:
-    bsids = tuple(int(b) for b in bsids)
-    broadcaster, _ = Broadcaster.objects.get_or_create(
-        name=name, defaults={"organization": organization or name, "bsids": list(bsids)})
-    if list(bsids) and list(broadcaster.bsids) != list(bsids):
-        broadcaster.bsids = list(bsids)
-        broadcaster.save(update_fields=["bsids"])
+def issue_tenant_ca(tenant: Tenant, *, common_name: Optional[str] = None,
+                    days: int = 3650, kms_key_id: str = "", key=None,
+                    actor: str = "system") -> Certificate:
+    """Issue a per-tenant intermediate CA signed by the offline root.
+
+    Revoking this certificate disables one customer (the tenant's leaves and
+    the tenant itself), leaving the root and other tenants untouched.
+    ``key``/``kms_key_id`` inject an external signer (KMS); otherwise a local
+    P-384 key is generated and written under ``tenants/<slug>/``.
+    """
     authority = _authority()
-    cert = authority.issue_broadcaster(name, bsids, common_name=common_name,
-                                       days=days)
-    key_path = os.path.join(authority.broadcaster_dir(name), "signing.key.pem")
+    signer = _signer_for(key, kms_key_id)
+    cert = authority.issue_tenant_ca(tenant.slug, common_name=common_name,
+                                     days=days, key=signer)
+    key_path = "" if signer is not None else authority.tenant_key_path(tenant.slug)
     with transaction.atomic():
-        result = record_certificate(cert, Profile.SIGNALING_SIGNER,
-                                    key_path=key_path, broadcaster=broadcaster)
-        audit("issue-broadcaster", actor=actor, target=result.certificate,
-              detail={"name": name, "bsids": list(bsids)})
+        result = record_certificate(cert, Profile.TENANT_CA, tenant=tenant,
+                                    key_path=key_path, kms_key_id=kms_key_id)
+        audit("issue-tenant-ca", actor=actor, target=result.certificate,
+              detail={"tenant": tenant.slug, "cn": common_name})
     return result.certificate
 
 
-def issue_ocsp_responder(*, common_name: str = "OpenATSC3 OCSP Responder",
-                         days: int = 365, actor: str = "system") -> OcspResponder:
+def issue_broadcaster(name: str, bsids: Iterable[int], *,
+                      tenant: Optional[Tenant] = None,
+                      common_name: Optional[str] = None, days: int = 365,
+                      organization: Optional[str] = None,
+                      kms_key_id: str = "", key=None,
+                      actor: str = "system") -> Certificate:
+    bsids = tuple(int(b) for b in bsids)
+    defaults = {"organization": organization or name, "bsids": list(bsids)}
+    if tenant is not None:
+        defaults["tenant"] = tenant
+    broadcaster, _ = Broadcaster.objects.get_or_create(name=name, defaults=defaults)
+    updates = []
+    if list(bsids) and list(broadcaster.bsids) != list(bsids):
+        broadcaster.bsids = list(bsids)
+        updates.append("bsids")
+    if tenant is not None and broadcaster.tenant_id != tenant.id:
+        broadcaster.tenant = tenant
+        updates.append("tenant")
+    if updates:
+        broadcaster.save(update_fields=updates)
     authority = _authority()
-    issuing = authority.load_issuing()
-    issuing_key = authority.load_issuing_key()
-    key = pki_keys.generate(pki_keys.SIGNER_CURVE)
+    tenant_slug = tenant.slug if tenant is not None else None
+    signer = _signer_for(key, kms_key_id)
+    ca_key = _tenant_ca_signer(tenant) if tenant is not None else None
+    cert = authority.issue_broadcaster(name, bsids, common_name=common_name,
+                                       days=days, tenant=tenant_slug,
+                                       key=signer, ca_key=ca_key)
+    key_path = ("" if signer is not None else
+                os.path.join(authority.broadcaster_dir(name, tenant_slug),
+                             "signing.key.pem"))
+    with transaction.atomic():
+        result = record_certificate(cert, Profile.SIGNALING_SIGNER,
+                                    key_path=key_path, kms_key_id=kms_key_id,
+                                    broadcaster=broadcaster, tenant=tenant)
+        audit("issue-broadcaster", actor=actor, target=result.certificate,
+              detail={"name": name, "bsids": list(bsids),
+                      "tenant": tenant_slug})
+    return result.certificate
+
+
+def issue_ocsp_responder(*, tenant: Optional[Tenant] = None,
+                         common_name: str = "OpenATSC3 OCSP Responder",
+                         days: int = 365, kms_key_id: str = "", key=None,
+                         actor: str = "system") -> OcspResponder:
+    authority = _authority()
+    if tenant is None:
+        issuing = authority.load_issuing()
+        issuing_key = authority.load_issuing_key()
+        responder_dir = base_dir()
+    else:
+        issuing = authority.load_tenant(tenant.slug)
+        issuing_key = (_tenant_ca_signer(tenant)
+                       or authority.load_tenant_key(tenant.slug))
+        responder_dir = Path(authority.tenant_dir(tenant.slug))
+    signer = _signer_for(key, kms_key_id)
+    key_path = responder_dir / "ocsp-responder.key.pem"
+    if signer is None:
+        signer = pki_keys.generate(pki_keys.SIGNER_CURVE)
+        pki_keys.write_private(str(key_path), signer)
+        key_path_str = str(key_path)
+    else:
+        key_path_str = ""
     subject = SubjectInfo(
         common_name=common_name,
         organizational_unit="ATSC OCSP Responder",
         organization=_name_attr(issuing.cert.subject, NameOID.ORGANIZATION_NAME),
     )
-    cert = pki_x509.issue_ocsp_responder(subject, key, issuing, issuing_key,
+    cert = pki_x509.issue_ocsp_responder(subject, signer, issuing, issuing_key,
                                          days=days)
-    key_path = base_dir() / "ocsp-responder.key.pem"
-    pki_keys.write_private(str(key_path), key)
     with transaction.atomic():
-        result = record_certificate(cert, Profile.OCSP_RESPONDER,
-                                    key_path=str(key_path))
+        result = record_certificate(cert, Profile.OCSP_RESPONDER, tenant=tenant,
+                                    key_path=key_path_str, kms_key_id=kms_key_id)
         responder = OcspResponder.objects.create(
             common_name=common_name, certificate=result.certificate,
-            key_path=str(key_path), key_sha256=sha256_file(str(key_path)),
+            key_path=key_path_str,
+            key_sha256=sha256_file(key_path_str) if key_path_str else "",
             active=True)
         audit("issue-ocsp-responder", actor=actor, target=responder,
-              detail={"cn": common_name})
+              detail={"cn": common_name,
+                      "tenant": tenant.slug if tenant is not None else None})
     return responder
 
 
@@ -281,7 +400,7 @@ def generate_ocsp(cert: Certificate, *, responder: OcspResponder,
     next_update = next_update or (this_update + refresh)
     issuer = _issuer_of(cert)
     responder_cert = _load_any(responder.certificate)
-    responder_key = pki_keys.load_private(responder.key_path)
+    responder_key = _responder_signer(responder)
     issuer_cert = _load_any(issuer)
     cert_cert = _load_any(cert)
 

@@ -24,6 +24,7 @@ class Profile:
 
     ROOT = "root"
     ISSUING_CA = "issuing-ca"
+    TENANT_CA = "tenant-ca"
     SIGNALING_SIGNER = "signaling-signer"
     CDT_SIGNER = "cdt-signer"
     OCSP_RESPONDER = "ocsp-responder"
@@ -31,6 +32,7 @@ class Profile:
     CHOICES = [
         (ROOT, "Root CA (A/360 5.3.1.2)"),
         (ISSUING_CA, "Issuing CA (A/360 5.3.1.3)"),
+        (TENANT_CA, "Tenant intermediate CA (A/360 5.3.1.3)"),
         (SIGNALING_SIGNER, "Broadcast signaling signer (A/360 5.3.1.6)"),
         (CDT_SIGNER, "CertificationData signer (A/360 5.2.2.2)"),
         (OCSP_RESPONDER, "OCSP responder (A/360 5.3.1.7)"),

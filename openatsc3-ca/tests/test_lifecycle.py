@@ -103,3 +103,100 @@ def test_ocsp_status_follows_revocation(ca):
 
     latest = signer.ocsp_responses.first()
     assert latest.status == "revoked"
+
+
+def _build_tenant_cdt(tenant, signer, responder, signing_time):
+    """Assemble a signed CDT for a tenant, with stapled OCSP per certificate.
+
+    The chain carries the tenant intermediate CA (the root stays a trust
+    anchor, out of band); the CDT signer and responder are the tenant's own.
+    """
+    from openatsc3_pki import cdt, keys, ocsp
+    from openatsc3_pki.x509 import SubjectInfo, issue_signaling_signer
+
+    ca_row = services.tenant_ca(tenant)
+    issuing = services.certificate_x509(ca_row)
+    issuing_key = keys.load_private(ca_row.key_path)
+    signer_x = services.certificate_x509(signer)
+
+    cdt_key = keys.generate()
+    cdt_cert = issue_signaling_signer(
+        SubjectInfo(common_name=f"{tenant.slug}-CDT-Signer",
+                    organizational_unit="ATSC Broadcast Signaling Signer",
+                    organization=tenant.name),
+        cdt_key, issuing, issuing_key, (540,))
+    resp = services.certificate_x509(responder.certificate)
+    resp_key = keys.load_private(responder.key_path)
+    store = services.status_store()
+
+    def ocsp_for(cert):
+        return ocsp.respond(cert, issuing, resp, resp_key, store,
+                            this_update=signing_time,
+                            next_update=signing_time + dt.timedelta(hours=20))
+
+    table = cdt.build(
+        chain=[issuing.der()], signing_cert=signer_x, cdt_signer_cert=cdt_cert,
+        cdt_signer_key=cdt_key,
+        ocsp_responses=[ocsp_for(issuing), ocsp_for(signer_x), ocsp_for(cdt_cert)],
+        signing_time=signing_time)
+    return table, signer_x
+
+
+def test_issue_tenant_ca_records_tenant_and_parent(ca):
+    from openatsc3_ca.catalog.models import Tenant
+
+    tenant = Tenant.objects.create(name="Acme", slug="acme")
+    tca = services.issue_tenant_ca(tenant)
+    assert tca.tenant == tenant
+    assert tca.parent == ca["root"]
+    assert tca.key_path.endswith("tenants/acme/issuing.key.pem")
+    assert tca.kms_key_id == ""
+
+
+def test_revoked_tenant_ca_fails_cdt_verification(ca):
+    from openatsc3_pki import verify
+    from openatsc3_ca.catalog.models import Tenant
+
+    tenant = Tenant.objects.create(name="Acme", slug="acme")
+    services.issue_tenant_ca(tenant)
+    signer = services.issue_broadcaster("ACME-TV", (540,), tenant=tenant)
+    responder = services.issue_ocsp_responder(tenant=tenant)
+    now = timezone.now().replace(microsecond=0)
+    roots = [services.certificate_x509(ca["root"])]
+
+    table, _ = _build_tenant_cdt(tenant, signer, responder, now)
+    verdict, _ = verify.verify_certification_data(table, roots, now=now)
+    assert verdict.ok, verdict.reason
+
+    # Revoking the tenant intermediate disables the whole tenant: its leaf's
+    # OCSP now reports the intermediate as revoked and the CDT will not verify.
+    services.revoke(services.tenant_ca(tenant))
+    table2, _ = _build_tenant_cdt(tenant, signer, responder, now)
+    verdict2, _ = verify.verify_certification_data(table2, roots, now=now)
+    assert not verdict2.ok
+
+
+def test_revoking_one_tenant_leaves_another_valid(ca):
+    from openatsc3_pki import verify
+    from openatsc3_ca.catalog.models import Tenant
+
+    acme = Tenant.objects.create(name="Acme", slug="acme")
+    beta = Tenant.objects.create(name="Beta", slug="beta")
+    for tenant in (acme, beta):
+        services.issue_tenant_ca(tenant)
+    signer_a = services.issue_broadcaster("ACME-TV", (540,), tenant=acme)
+    signer_b = services.issue_broadcaster("BETA-TV", (541,), tenant=beta)
+    resp_a = services.issue_ocsp_responder(tenant=acme)
+    resp_b = services.issue_ocsp_responder(tenant=beta)
+    now = timezone.now().replace(microsecond=0)
+    roots = [services.certificate_x509(ca["root"])]
+
+    services.revoke(services.tenant_ca(acme))
+
+    table_a, _ = _build_tenant_cdt(acme, signer_a, resp_a, now)
+    verdict_a, _ = verify.verify_certification_data(table_a, roots, now=now)
+    assert not verdict_a.ok
+
+    table_b, _ = _build_tenant_cdt(beta, signer_b, resp_b, now)
+    verdict_b, _ = verify.verify_certification_data(table_b, roots, now=now)
+    assert verdict_b.ok, verdict_b.reason

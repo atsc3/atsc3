@@ -20,7 +20,11 @@ protection use our own root and our own DRM scheme.
 
 - **PostgreSQL is the source of truth** for certificate lifecycle state.
 - **Private keys stay on disk (0600)**, referenced by path + SHA-256; the
-  database never holds key bytes.
+  database never holds key bytes.  A key may instead be a non-exportable **AWS
+  KMS** asymmetric key, referenced by `kms_key_id` (install the `[kms]` extra).
+- **Per-tenant intermediate CAs**: the offline root signs one intermediate per
+  customer (`tenants/<slug>/…`); each intermediate signs that customer's leaves,
+  so revoking it disables only that customer.
 - The classic `<base>/*.pem` tree is a **materialized view** written by the
   `export` command and read by the receiver/signer.
 - No cryptography is reimplemented here: `openatsc3_ca/catalog/services.py`
@@ -62,8 +66,10 @@ python manage.py migrate
 python manage.py createsuperuser      # admin at /admin/
 python manage.py init-root
 python manage.py issue-ca
+python manage.py issue-tenant-ca --tenant acme           # per-tenant intermediate
 python manage.py issue-ocsp-responder
 python manage.py issue-broadcaster --name WHUT --bsid 540
+python manage.py issue-broadcaster --tenant acme --name ACME-TV --bsid 541
 python manage.py ocsp --serial <serial>
 python manage.py revoke --serial <serial>   # persistent; OCSP now says revoked
 python manage.py export                     # DB -> PEM tree
@@ -71,9 +77,12 @@ python manage.py import-tree --path out/pkitest   # legacy tree -> DB
 python manage.py audit
 ```
 
-Models: `Certificate`, `Broadcaster`, `OcspResponse`, `OcspResponder`,
-`RolloverPlan` (the window constraint is already enforced),
+Models: `Tenant`, `Certificate`, `Broadcaster`, `OcspResponse`,
+`OcspResponder`, `RolloverPlan` (the window constraint is already enforced),
 `PublishedSignaling`, `SpecReference`, and an append-only `AuditEvent`.
+`Certificate` records a key either as an on-disk path (+ SHA-256) or as a
+`kms_key_id`; `--kms-key-id` on the issue commands installs a non-exportable
+KMS key (install the `[kms]` extra).
 
 ## Tests
 
@@ -85,10 +94,14 @@ make test PYTHON=.venv-ca/bin/python
 The suite runs against the embedded PostgreSQL and covers the model
 constraints, revocation persistence, OCSP status transitions, the legacy-tree
 import (idempotent + reversible), and the end-to-end gate where a **revoked
-signer makes the receiver's `verify_certification_data` fail**.
+signer makes the receiver's `verify_certification_data` fail**.  It also covers
+**per-tenant CAs**: revoking a tenant intermediate fails verification, while
+revoking one tenant leaves another tenant's CDT valid.
 
 ## Status
 
-Phase 1 (Gap A closure) is done: persistent revocation, a real `revoke`, and
-the `export`/`import-tree` tree round trip.  Phase 2 (rollover/renew,
-`publish`) and Phase 3 (content keys, DRF, HSM) remain.
+Phase 0/1 is done: persistent revocation, a real `revoke`, the
+`export`/`import-tree` tree round trip, and per-tenant intermediate CAs
+(`Tenant` model + migration `0004`, `issue-tenant-ca`, KMS-backed keys).  Phase 2
+(rollover/renew, `publish`) and Phase 3 (content keys, DRF, offline-root
+ceremony) remain.

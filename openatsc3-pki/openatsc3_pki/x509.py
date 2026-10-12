@@ -3,7 +3,9 @@
 Profiles follow A/360 5.3.1:
 
 * Root (5.3.1.2): ECDSA >= P-384; CA; ``keyCertSign`` + ``crlSign``.
-* Issuing CA (5.3.1.3): ECDSA >= P-256; CA.
+* Issuing CA (5.3.1.3): ECDSA >= P-256; CA.  The per-tenant intermediate CA
+  (:func:`issue_tenant_ca`) shares this profile; revoking it disables one
+  customer.
 * Broadcast signaling signer (5.3.1.6): ECDSA >= P-256; KeyUsage critical
   ``digitalSignature`` **only**; ExtendedKeyUsage critical containing
   ``id-atsc-kp-signalingSigning`` (1.3.6.1.4.1.51552.37.3); Subject Directory
@@ -122,6 +124,18 @@ def issue_ca(subject: SubjectInfo, key: "KeyLike", issuer: "Certificate",
             critical=False)
     )
     return _sign(builder, issuer_key)
+
+
+def issue_tenant_ca(subject: SubjectInfo, key: "KeyLike", root: "Certificate",
+                    root_key: "KeyLike", days: int = 3650) -> "Certificate":
+    """Per-tenant intermediate CA signed by the offline root (A/360 5.3.1.3).
+
+    Same profile as :func:`issue_ca`; named separately because this is the
+    certificate whose revocation disables one customer.  ``root`` is the
+    offline trust anchor and ``root_key`` its signer, so the identical call
+    works with a local root in tests and an offline/KMS root in production.
+    """
+    return issue_ca(subject, key, root, root_key, days=days)
 
 
 def issue_signaling_signer(subject: SubjectInfo, key: "KeyLike",
