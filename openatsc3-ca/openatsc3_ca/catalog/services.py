@@ -25,6 +25,7 @@ from django.db import transaction
 from django.utils import timezone
 from openatsc3_pki import ca as pki_ca
 from openatsc3_pki import cdt as pki_cdt
+from openatsc3_pki import crl as pki_crl
 from openatsc3_pki import keys as pki_keys
 from openatsc3_pki import ocsp as pki_ocsp
 from openatsc3_pki import x509 as pki_x509
@@ -678,28 +679,87 @@ def mark_order_paid(order: Order, *, session_id: str = "",
     return order
 
 
+def _locate_order(obj: dict) -> Optional[Order]:
+    """Find the order a Stripe event object refers to (metadata, then intent)."""
+    order_pk = (obj.get("metadata") or {}).get("order")
+    if order_pk:
+        order = Order.objects.filter(pk=order_pk).first()
+        if order is not None:
+            return order
+    intent = obj.get("payment_intent")
+    if not intent and obj.get("object") == "payment_intent":
+        intent = obj.get("id")
+    if intent:
+        return Order.objects.filter(stripe_payment_intent=intent).first()
+    session_id = obj.get("id")
+    if session_id and obj.get("object") == "checkout.session":
+        return Order.objects.filter(stripe_session_id=session_id).first()
+    return None
+
+
 def handle_webhook(payload: bytes, signature: str, *, gateway=None,
                    actor: str = "stripe") -> Optional[Order]:
     """Apply a Stripe webhook event; returns the affected order, if any.
 
-    Only ``checkout.session.completed`` is acted on.  The order is located by
-    the ``order`` metadata set at checkout, falling back to the session id.
+    Acted on: ``checkout.session.completed`` (-> paid), ``charge.refunded`` /
+    ``charge.dispute.created`` (-> refund, revoking the tenant by policy), and
+    ``payment_intent.payment_failed`` (-> cancel an unfulfilled order).  The
+    order is located by the ``order`` metadata set at checkout, falling back to
+    the payment intent / session id.
     """
     gateway = gateway or default_gateway()
     event = gateway.parse_webhook(payload, signature)
-    if event.get("type") != "checkout.session.completed":
-        return None
+    event_type = event.get("type")
     obj = (event.get("data") or {}).get("object") or {}
-    session_id = obj.get("id", "")
-    order_pk = (obj.get("metadata") or {}).get("order")
-    order = Order.objects.filter(pk=order_pk).first() if order_pk else None
-    if order is None and session_id:
-        order = Order.objects.filter(stripe_session_id=session_id).first()
-    if order is None:
-        return None
-    return mark_order_paid(order, session_id=session_id,
-                           payment_intent=obj.get("payment_intent") or "",
-                           actor=actor)
+    if event_type == "checkout.session.completed":
+        order = _locate_order(obj)
+        if order is None:
+            return None
+        return mark_order_paid(order, session_id=obj.get("id") or "",
+                               payment_intent=obj.get("payment_intent") or "",
+                               actor=actor)
+    if event_type in ("charge.refunded", "charge.dispute.created"):
+        order = _locate_order(obj)
+        return refund_order(order, actor=actor) if order is not None else None
+    if event_type == "payment_intent.payment_failed":
+        order = _locate_order(obj)
+        return mark_order_failed(order, actor=actor) if order is not None else None
+    return None
+
+
+def refund_order(order: Order, *, revoke_tenant: bool = True, reason: str = "refund",
+                 actor: str = "system") -> Order:
+    """Mark an order refunded and, by policy, revoke the tenant CA.
+
+    Disabling a customer is one contained operation: revoke the tenant
+    intermediate, which fails the receiver's per-cert OCSP loop for that tenant
+    only ([[tenant-ca-model]]).  ``revoke_tenant=False`` records the refund
+    without disabling the customer.
+    """
+    if order.status == OrderStatus.REFUNDED:
+        return order
+    order.status = OrderStatus.REFUNDED
+    order.refunded_at = order.refunded_at or timezone.now()
+    order.save(update_fields=["status", "refunded_at", "updated_at"])
+    revoked = False
+    if revoke_tenant and order.tenant_id:
+        ca = _tenant_ca_cert(order.tenant)
+        if ca is not None and ca.status != CertStatus.REVOKED:
+            revoke(ca, reason=reason, actor=actor)
+            revoked = True
+    audit("refund-order", actor=actor, target=order,
+          detail={"tenant": order.tenant.slug if order.tenant_id else None,
+                  "revoked": revoked})
+    return order
+
+
+def mark_order_failed(order: Order, *, actor: str = "stripe") -> Order:
+    """A failed payment on an unfulfilled order: cancel it (nothing to revoke)."""
+    if order.status in (OrderStatus.PENDING, OrderStatus.PAID):
+        order.status = OrderStatus.CANCELLED
+        order.save(update_fields=["status", "updated_at"])
+        audit("order-failed", actor=actor, target=order)
+    return order
 
 
 def bundle_files(table, smt_bytes: Optional[bytes] = None) -> dict:
@@ -708,8 +768,8 @@ def bundle_files(table, smt_bytes: Optional[bytes] = None) -> dict:
     ``certs.pem`` is the full certificate set carried by the CDT (CA chain +
     CurrentCert + CDT signer [+ NextCert]), each OCSP response is written as
     ``ocsp-NN.der``, and the gzipped CDT plus the signed SMT (when present) are
-    included.  A CRL is not produced — revocation is carried by the stapled OCSP
-    (A/360 5.2.2.2).
+    included.  A CRL (``crl.pem``) is added by the caller when a CA is known; the
+    stapled OCSP remains the A/360 revocation mechanism (A/360 5.2.2.2).
     """
     files = {
         "certs.pem": b"".join(pki_x509.load_der(c).pem()
@@ -780,8 +840,12 @@ def fulfill_order(order: Order, *, deliverer=None, actor: str = "system",
         issue_ocsp_responder(tenant=tenant, actor=actor)
 
     _published, table, smt = publish(broadcaster, actor=actor)
+    files = bundle_files(table, smt)
+    tenant_ca_row = _tenant_ca_cert(tenant)
+    if tenant_ca_row is not None:
+        files["crl.pem"] = pki_crl.pem(generate_crl(tenant_ca_row, actor=actor))
     url = (deliverer or default_deliverer()).deliver(
-        f"order-{order.pk}", bundle_files(table, smt), expires_in=expires_in)
+        f"order-{order.pk}", files, expires_in=expires_in)
 
     order.tenant = tenant
     order.broadcaster = broadcaster
@@ -848,6 +912,32 @@ def generate_ocsp(cert: Certificate, *, responder: OcspResponder,
         certificate=cert, issuer=issuer, status=status, produced_at=this_update,
         this_update=this_update, next_update=next_update, der_file=str(out),
         sha256=hashlib.sha256(der).hexdigest(), responder=responder)
+
+
+def generate_crl(ca_cert: Certificate, *,
+                 this_update: Optional[_dt.datetime] = None,
+                 next_update: Optional[_dt.datetime] = None,
+                 days: int = 7, actor: str = "system") -> bytes:
+    """Build a CRL for ``ca_cert`` over its revoked children (DER).
+
+    The CRL is signed by the CA's own key (KMS or local).  Files land under
+    ``<base>/crl/<serial>.crl.der`` (+ ``.pem``).  A/360 revocation is carried by
+    the stapled OCSP; this is the offline-distributable companion.
+    """
+    revoked = [
+        (int(c.serial), c.revoked_at or timezone.now(),
+         c.revocation_reason or "unspecified")
+        for c in Certificate.objects.filter(parent=ca_cert,
+                                            status=CertStatus.REVOKED)
+    ]
+    der = pki_crl.build(_load_any(ca_cert), _cert_signer(ca_cert), revoked,
+                        this_update=this_update, next_update=next_update, days=days)
+    out_dir = base_dir() / "crl"
+    _write_bytes(out_dir / f"{ca_cert.serial}.crl.der", der)
+    _write_bytes(out_dir / f"{ca_cert.serial}.crl.pem", pki_crl.pem(der))
+    audit("generate-crl", actor=actor, target=ca_cert,
+          detail={"revoked": len(revoked)})
+    return der
 
 
 def _load_any(cert: Certificate) -> X509Certificate:

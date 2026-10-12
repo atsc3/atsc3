@@ -149,6 +149,12 @@ def _verify_ocsp(der: bytes, cert: Certificate, issuer: Certificate,
         responder = Certificate(resp.certificates[0])
     if responder is None:
         return "OCSP response carries no responder certificate"
+    # The responder certificate itself must be in date at verification time
+    # (A/360 5.2.2.6 item 2), so an expired responder cannot sign revocation
+    # status.
+    reason = _check_validity(responder, now)
+    if reason:
+        return f"OCSP responder {reason}"
     # The responder must authenticate: it is the issuer itself, or a
     # delegated responder with id-kp-OCSPSigning signed by the issuer
     # (RFC 6960 4.2.2.2).

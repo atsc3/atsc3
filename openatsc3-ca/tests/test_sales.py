@@ -97,6 +97,7 @@ def test_fulfill_issues_and_delivers_the_bundle(ca, tmp_path):
     out = Path(order.delivery_url)
     assert (out / "certs.pem").exists()
     assert (out / "cdt.xml.gz").exists()
+    assert (out / "crl.pem").exists()
     assert list(out.glob("ocsp-*.der"))
     assert "-----BEGIN CERTIFICATE-----" in (out / "certs.pem").read_text()
 
@@ -123,3 +124,67 @@ def test_s3_deliverer_uploads_and_presigns():
     assert url.startswith("https://s3.example/certs-bucket/order-1/certs.pem")
     assert client.objects[("certs-bucket", "order-1/certs.pem")] == b"x"
     assert client.objects[("certs-bucket", "order-1/cdt.xml.gz")] == b"y"
+
+
+def _fulfilled_order(tmp_path):
+    order = _order()
+    services.mark_order_paid(order)
+    services.fulfill_order(order, deliverer=LocalDeliverer(tmp_path / "deliveries"))
+    return order
+
+
+def test_refund_revokes_the_tenant_ca(ca, tmp_path):
+    order = _fulfilled_order(tmp_path)
+    tenant_ca = services.tenant_ca(order.tenant)
+
+    services.refund_order(order)
+
+    order.refresh_from_db()
+    tenant_ca.refresh_from_db()
+    assert order.status == "refunded"
+    assert order.refunded_at is not None
+    assert tenant_ca.status == "revoked"
+
+
+def test_refund_can_keep_the_tenant(ca, tmp_path):
+    order = _fulfilled_order(tmp_path)
+    services.refund_order(order, revoke_tenant=False)
+
+    order.refresh_from_db()
+    assert order.status == "refunded"
+    assert services.tenant_ca(order.tenant).status == "good"
+
+
+def test_refund_webhook_locates_the_order(ca, tmp_path):
+    gateway = FakeGateway()
+    order = _fulfilled_order(tmp_path)
+    order.stripe_payment_intent = "pi_refund"
+    order.save(update_fields=["stripe_payment_intent"])
+
+    payload = json.dumps({
+        "type": "charge.refunded",
+        "data": {"object": {"object": "charge", "payment_intent": "pi_refund"}},
+    }).encode()
+
+    result = services.handle_webhook(payload, "sig", gateway=gateway)
+
+    result.refresh_from_db()
+    assert result.pk == order.pk
+    assert result.status == "refunded"
+    assert services.tenant_ca(order.tenant).status == "revoked"
+
+
+def test_payment_failure_cancels_a_pending_order(ca):
+    gateway = FakeGateway()
+    order = _order()
+    services.create_checkout(order, gateway=gateway)
+    payload = json.dumps({
+        "type": "payment_intent.payment_failed",
+        "data": {"object": {"object": "payment_intent", "id": "pi_x",
+                            "metadata": {"order": str(order.pk)}}},
+    }).encode()
+
+    result = services.handle_webhook(payload, "sig", gateway=gateway)
+
+    result.refresh_from_db()
+    assert result.status == "cancelled"

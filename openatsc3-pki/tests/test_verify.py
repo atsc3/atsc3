@@ -215,6 +215,23 @@ def test_cdt_with_next_cert_carries_rollover_window(authority, now):
     assert certified.current_until == current_until
 
 
+def test_expired_ocsp_responder_fails(authority, now):
+    """An OCSP response signed by an expired responder is rejected (A/360 5.2.2.6)."""
+    issuing = authority.load_issuing()
+    leaf = authority.load_broadcaster("WHUT")
+    resp_key = keys.generate()
+    resp_cert = issue_ocsp_responder(
+        SubjectInfo(common_name="Short-Lived OCSP",
+                    organizational_unit="ATSC OCSP Responder",
+                    organization="OpenATSC3"),
+        resp_key, issuing, authority.load_issuing_key(), days=1)
+    der = ocsp.respond(leaf, issuing, resp_cert, resp_key, ocsp.StatusStore(),
+                       this_update=now, next_update=now + dt.timedelta(hours=20))
+    later = now + dt.timedelta(days=2)
+    reason = verify._verify_ocsp(der, leaf, issuing, later, dt.timedelta(hours=20))
+    assert reason and "responder" in reason and "expired" in reason
+
+
 def test_missing_signaling_eku_fails(tmp_path):
     """A signer without id-atsc-kp-signalingSigning is rejected (A/360 5.2.2.6 3a)."""
     from openatsc3_pki import ca

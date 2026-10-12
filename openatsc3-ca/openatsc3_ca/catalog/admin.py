@@ -66,9 +66,9 @@ class OrderAdmin(admin.ModelAdmin):
     search_fields = ("email", "organization", "stripe_session_id",
                      "stripe_payment_intent")
     readonly_fields = ("stripe_session_id", "stripe_payment_intent", "checkout_url",
-                       "delivery_url", "paid_at", "fulfilled_at", "tenant",
-                       "broadcaster", "created_at", "updated_at")
-    actions = ("approve_orders",)
+                       "delivery_url", "paid_at", "fulfilled_at", "refunded_at",
+                       "tenant", "broadcaster", "created_at", "updated_at")
+    actions = ("approve_orders", "refund_orders")
 
     @admin.action(description="Approve and fulfill selected paid orders")
     def approve_orders(self, request, queryset):
@@ -78,6 +78,15 @@ class OrderAdmin(admin.ModelAdmin):
             services.fulfill_order(order, actor=actor)
             count += 1
         self.message_user(request, f"fulfilled {count} order(s)")
+
+    @admin.action(description="Refund selected orders (revokes the tenant CA)")
+    def refund_orders(self, request, queryset):
+        actor = getattr(request.user, "username", "admin")
+        count = 0
+        for order in queryset.exclude(status="refunded"):
+            services.refund_order(order, actor=actor)
+            count += 1
+        self.message_user(request, f"refunded {count} order(s)")
 
 
 @admin.register(OcspResponder)

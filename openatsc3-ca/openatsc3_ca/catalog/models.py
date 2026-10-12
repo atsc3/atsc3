@@ -33,6 +33,8 @@ class Tenant(models.Model):
     slug = models.SlugField(max_length=128, unique=True)
     organization = models.CharField(max_length=255, blank=True)
     active = models.BooleanField(default=True)
+    #: Bearer token for the customer-facing API (blank = API access disabled).
+    api_token = models.CharField(max_length=64, blank=True, db_index=True)
     notes = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -334,6 +336,8 @@ class Order(models.Model):
     delivery_url = models.CharField(max_length=2048, blank=True)
     paid_at = models.DateTimeField(null=True, blank=True)
     fulfilled_at = models.DateTimeField(null=True, blank=True)
+    #: Set when a refund/failed payment revokes the tenant (see ``refund_order``).
+    refunded_at = models.DateTimeField(null=True, blank=True)
     note = models.TextField(blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)

@@ -111,3 +111,21 @@ def test_export_materializes_tenant_and_responder_trees(ca):
     assert (base / "tenants" / "acme" / "ocsp-responder.cert.pem").exists()
     assert (base / "tenants" / "acme" / "broadcasters" / "ACME-TV"
             / "signing.cert.pem").exists()
+
+
+def test_generate_crl_lists_revoked_leaves(ca):
+    from cryptography import x509 as crypto_x509
+
+    tenant, _broadcaster, signer, _responder = _tenant_bundle()
+    services.revoke(signer, reason="key-compromise")
+
+    ca_row = services.tenant_ca(tenant)
+    der = services.generate_crl(ca_row)
+
+    parsed = crypto_x509.load_der_x509_crl(der)
+    assert parsed.issuer == services.certificate_x509(ca_row).subject
+    entry = parsed.get_revoked_certificate_by_serial_number(int(signer.serial))
+    assert entry is not None
+    reason = entry.extensions.get_extension_for_class(
+        crypto_x509.CRLReason).value
+    assert reason.reason == crypto_x509.ReasonFlags.key_compromise

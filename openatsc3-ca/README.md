@@ -79,7 +79,10 @@ python manage.py start-rollover --current <serial> --next <serial>
 python manage.py complete-rollover --plan <id>
 python manage.py create-checkout --id <order>     # Stripe Checkout Session
 python manage.py approve-order --id <order>       # issue tenant CA + deliver
+python manage.py refund-order --id <order>        # refund + revoke the tenant CA
+python manage.py set-api-token --tenant acme      # customer API bearer token
 python manage.py ocsp --serial <serial>
+python manage.py generate-crl --serial <ca-serial>   # CRL of the CA's revoked children
 python manage.py revoke --serial <serial>   # persistent; OCSP now says revoked
 python manage.py export                     # DB -> PEM tree (root + tenants + responders)
 python manage.py import-tree --path out/pkitest   # on-disk tree -> DB (legacy + tenants + responders)
@@ -105,13 +108,31 @@ tree), so two customers may use the same station name.
   `paid`.
 - **Manual approval.** The admin `Order` action (or `approve-order`) issues the
   tenant CA + leaves, `publish`es the signed bundle, and **delivers** it. The
-  bundle (`certs.pem`, `cdt.xml.gz`, `ocsp-NN.der`, optional `signing.smt`) is
-  written to `OPENATSC3_CA_DELIVERY_DIR`, or uploaded to S3 with a **presigned
-  URL** when `OPENATSC3_CA_S3_BUCKET` is set (`[aws]` extra). A CRL is not
-  produced — revocation is carried by the stapled OCSP.
+  bundle (`certs.pem`, `cdt.xml.gz`, `ocsp-NN.der`, `crl.pem`, optional
+  `signing.smt`) is written to `OPENATSC3_CA_DELIVERY_DIR`, or uploaded to S3 with
+  a **presigned URL** when `OPENATSC3_CA_S3_BUCKET` is set (`[aws]` extra). The
+  stapled OCSP is the A/360 revocation mechanism; `crl.pem` is the offline
+  companion, built by `generate_crl`/`generate-crl`.
+- **Refunds.** A refund (`refund-order`, or `charge.refunded` /
+  `charge.dispute.created` via the webhook) marks the order `refunded` and, by
+  policy, **revokes the tenant CA** — disabling that customer only
+  (`revoke_tenant=False` keeps them). A failed payment cancels an unfulfilled
+  order.
 - Settings: `OPENATSC3_CA_STRIPE_SECRET_KEY`, `..._WEBHOOK_SECRET`,
   `..._PUBLIC_BASE_URL`, `..._DELIVERY_DIR`, `..._S3_BUCKET`/`_S3_REGION`,
   `..._DELIVERY_TTL`.
+
+## Customer API (v1)
+
+A small token-authenticated JSON API (plain Django, no DRF). The tenant's
+`api_token` (`set-api-token`) is sent as `Authorization: Token <t>`:
+
+- `GET /api/v1/tenant/` — the tenant and its broadcaster names.
+- `GET /api/v1/certificates/` — the tenant's certificates (read-only).
+- `POST /api/v1/smt/` — sign uploaded LLS tables and return the CDT `0x06` +
+  SMT `0x07` as base64. Body:
+  `{"broadcaster": "ACME-TV", "tables": [{"table_id": 1, "version": 13,
+  "payload_b64": "..."}]}`.
 
 ## Signed bundle (`publish`)
 
@@ -121,8 +142,9 @@ and a fresh stapled OCSP per certificate — and, when `--lls` tables are given,
 signs them into an **LLS SignedMultiTable (`0x07`)** with the CurrentCert
 (A/331 6.7). An open rollover window adds the `CertReplacement` element and
 carries the NextCert. Output files land under `published/<broadcaster>/` and a
-`PublishedSignaling` snapshot is recorded. (A customer-facing upload endpoint is
-Phase 2; today the operator supplies tables via `--lls`.)
+`PublishedSignaling` snapshot is recorded. The customer-facing upload endpoint is
+the `POST /api/v1/smt/` API above; the operator can also supply tables via
+`--lls`.
 ## Tests
 
 ```bash
