@@ -21,6 +21,9 @@ dependencies = [
 dev = [
     "pytest>=7.0",
 ]
+kms = [
+    "boto3>=1.28",
+]
 
 [project.scripts]
 openatsc3-pki = "openatsc3_pki.cli:main"

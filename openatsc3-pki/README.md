@@ -99,6 +99,21 @@ pytest -q
 (schema repo `atsc-schemas.org`), used as an external oracle: it pins the
 `id-atsc-sdattr-bsid` encoding and the real-ATSC certificate profile.
 
+## Signing backends
+
+Every signing path (X.509 issuance, CMS `SignedData`, OCSP responses) goes
+through `openatsc3_pki.signer.Signer`, so the private key can live anywhere:
+
+- `LocalSigner` wraps an in-process `cryptography` key — the default and the
+  only backend the offline tests need.
+- `KmsSigner` signs with an AWS KMS asymmetric key (`kms:Sign`); the key never
+  leaves KMS. `boto3` is imported lazily (`pip install -e '.[kms]'`), so the
+  library stays dependency-light and is not locked to AWS.
+
+The existing `keys.KeyPair` API is unchanged — any function that took a
+`KeyPair` also accepts a `Signer`, and KMS key specs map to the A/360
+curve/digest pairs (P-256/SHA-256, P-384/SHA-384; KMS has no P-521).
+
 ## CA operator application
 
 The lifecycle layer — persistent revocation, a real `revoke`, and rollover — is
@@ -116,6 +131,9 @@ which is all the receiver and signer need.
 - Phase 2 of the CA app: rollover/renew lifecycle, `publish` (rebuild CDT/SMT
   from live status), and the end-to-end receiver gate over the published tree.
 - HSM / offline root key handling (Phase 3); a pluggable `KeyStore` backend.
+  The **online-key** half is in place: the `signer` seam plus the `KmsSigner`
+  backend (X.509, CMS and OCSP all sign through it), so an online key can be a
+  non-exportable KMS key. Offline-root custody is still out of scope here.
 - ROUTE SLS fragment signing (A/360 5.2.2.4) and MMTP `signed_mmt_message()`
   (5.2.2.5) beyond the SLT/SLT-table path already covered.
 - Read-only DRF API (v1 is admin-only).

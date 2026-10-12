@@ -30,7 +30,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 
-from . import keys
+from . import signer as _signer
 
 #: OID -> (curve, hash) for the A/360 5.2.2.1 item 4 permitted pairs.
 _SIG_ALG = {
@@ -59,18 +59,20 @@ def _digest(curve: str, data: bytes) -> bytes:
     return h.finalize()
 
 
-def sign_detached(signed_bytes: bytes, cert, key: keys.KeyPair,
+def sign_detached(signed_bytes: bytes, cert, key,
                   signing_time: Optional[_dt.datetime] = None) -> bytes:
     """Return a detached CMS SignedData (ContentInfo DER) over ``signed_bytes``.
 
     ``cert`` is an :class:`~openatsc3_pki.x509.Certificate`; its SubjectKey
     Identifier is used as the ``SignerIdentifier`` and it is *not* embedded
-    (A/360 5.2.2.1 item 3).
+    (A/360 5.2.2.1 item 3).  ``key`` is a :class:`~openatsc3_pki.keys.KeyPair`
+    or any :class:`~openatsc3_pki.signer.Signer` (e.g. a KMS key).
     """
     if signing_time is None:
         signing_time = _dt.datetime.now(_dt.timezone.utc)
     signing_time = signing_time.replace(microsecond=0)
-    curve = key.curve
+    signer = _signer.as_signer(key)
+    curve = signer.curve
     if curve not in _SIG_ALG:
         raise ValueError(f"curve {curve} is not a permitted signing curve")
 
@@ -83,7 +85,7 @@ def sign_detached(signed_bytes: bytes, cert, key: keys.KeyPair,
                           "values": [core.OctetString(_digest(curve, signed_bytes))]}),
     ])
     to_sign = attrs.dump()  # SET OF, the octets actually signed (RFC 5652 5.4)
-    signature = key.private.sign(to_sign, ec.ECDSA(_CRYPTO_HASH[curve]()))
+    signature = signer.sign(to_sign, _HASH[curve])
 
     sid = cert.subject_key_identifier()
     signer_info = cms.SignerInfo({

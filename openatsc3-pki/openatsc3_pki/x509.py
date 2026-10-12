@@ -18,15 +18,19 @@ from __future__ import annotations
 
 import datetime as _dt
 from dataclasses import dataclass, field
-from typing import Iterable, Optional, Tuple
+from typing import Iterable, Optional, Tuple, Union
 
 from cryptography import x509
-from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import ExtendedKeyUsageOID, ExtensionOID, NameOID
 
-from . import keys
+from . import keys, signer as _signer
 from .oids import ID_ATSC_KP_SIGNALING_SIGNING, ID_KP_OCSP_SIGNING
 from .sda import encode_bsid_sda
+
+#: A signing key: either a local :class:`~openatsc3_pki.keys.KeyPair` or any
+#: :class:`~openatsc3_pki.signer.Signer` backend (e.g. AWS KMS).
+KeyLike = Union[keys.KeyPair, _signer.Signer]
 
 
 @dataclass(frozen=True)
@@ -57,19 +61,12 @@ class SubjectInfo:
         return x509.Name(parts)
 
 
-def _hash_for(key: keys.KeyPair) -> hashes.HashAlgorithm:
-    """A/360 5.2.2.1 item 4: permitted curve/digest pair."""
-    return {"secp256r1": hashes.SHA256(),
-            "secp384r1": hashes.SHA384(),
-            "secp521r1": hashes.SHA512()}[key.curve]
-
-
 def _serial() -> int:
     import secrets
     return x509.random_serial_number()
 
 
-def issue_root(subject: SubjectInfo, key: keys.KeyPair,
+def issue_root(subject: SubjectInfo, key: "KeyLike",
                days: int = 7300) -> "Certificate":
     """Self-signed root certificate (A/360 5.3.1.2)."""
     if key.curve != keys.ROOT_CURVE:
@@ -98,8 +95,8 @@ def issue_root(subject: SubjectInfo, key: keys.KeyPair,
     return _sign(builder, key)
 
 
-def issue_ca(subject: SubjectInfo, key: keys.KeyPair, issuer: "Certificate",
-             issuer_key: keys.KeyPair, days: int = 3650) -> "Certificate":
+def issue_ca(subject: SubjectInfo, key: "KeyLike", issuer: "Certificate",
+             issuer_key: "KeyLike", days: int = 3650) -> "Certificate":
     """Issuing CA certificate (A/360 5.3.1.3), signed by ``issuer``."""
     builder = (
         x509.CertificateBuilder()
@@ -127,8 +124,8 @@ def issue_ca(subject: SubjectInfo, key: keys.KeyPair, issuer: "Certificate",
     return _sign(builder, issuer_key)
 
 
-def issue_signaling_signer(subject: SubjectInfo, key: keys.KeyPair,
-                           issuer: "Certificate", issuer_key: keys.KeyPair,
+def issue_signaling_signer(subject: SubjectInfo, key: "KeyLike",
+                           issuer: "Certificate", issuer_key: "KeyLike",
                            bsids: Iterable[int], days: int = 365) -> "Certificate":
     """Broadcast signaling signer certificate (A/360 5.3.1.6)."""
     bsid_set = tuple(sorted(int(b) for b in bsids))
@@ -169,8 +166,8 @@ def issue_signaling_signer(subject: SubjectInfo, key: keys.KeyPair,
     return _sign(builder, issuer_key)
 
 
-def issue_ocsp_responder(subject: SubjectInfo, key: keys.KeyPair,
-                         issuer: "Certificate", issuer_key: keys.KeyPair,
+def issue_ocsp_responder(subject: SubjectInfo, key: "KeyLike",
+                         issuer: "Certificate", issuer_key: "KeyLike",
                          days: int = 365) -> "Certificate":
     """OCSP responder certificate (A/360 5.3.1.7)."""
     builder = (
@@ -202,9 +199,33 @@ def issue_ocsp_responder(subject: SubjectInfo, key: keys.KeyPair,
     return _sign(builder, issuer_key)
 
 
-def _sign(builder: x509.CertificateBuilder, key: keys.KeyPair) -> "Certificate":
-    cert = builder.sign(key.private, _hash_for(key))
-    return Certificate(cert)
+def _sign(builder: x509.CertificateBuilder, key: "KeyLike") -> "Certificate":
+    """Sign a built TBSCertificate with a :class:`~openatsc3_pki.signer.Signer`.
+
+    A local key signs directly.  An external signer (e.g. KMS) has no private
+    key object for ``CertificateBuilder.sign``, so the TBS is first produced
+    with a throwaway key of the same curve and the signature is spliced back in
+    (the throwaway signature is discarded).
+    """
+    signer = _signer.as_signer(key)
+    hash_name = _signer.hash_for_curve(signer.curve)
+    hash_algorithm = _signer.HASH_ALGORITHMS[hash_name]()
+    if isinstance(signer, _signer.LocalSigner):
+        return Certificate(builder.sign(signer.private, hash_algorithm))
+    placeholder = builder.sign(
+        ec.generate_private_key(_signer.EC_CURVES[signer.curve]()), hash_algorithm)
+    signature = signer.sign(placeholder.tbs_certificate_bytes, hash_name)
+    return Certificate(_splice_signature(placeholder, signature))
+
+
+def _splice_signature(placeholder: x509.Certificate, signature: bytes) -> x509.Certificate:
+    """Replace the ``signatureValue`` of a certificate, leaving the TBS intact."""
+    from asn1crypto import core as _core
+    from asn1crypto import x509 as _acx509
+    from cryptography.hazmat.primitives.serialization import Encoding
+    parsed = _acx509.Certificate.load(placeholder.public_bytes(Encoding.DER))
+    parsed["signature_value"] = _core.OctetBitString(signature)
+    return x509.load_der_x509_certificate(parsed.dump())
 
 
 @dataclass(frozen=True)
