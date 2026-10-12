@@ -31,6 +31,14 @@ test = [
 kms = [
     "openatsc3-pki[kms]",
 ]
+# Stripe Checkout for sales.
+stripe = [
+    "stripe>=7",
+]
+# S3 artifact delivery (signed URLs).
+aws = [
+    "boto3>=1.28",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

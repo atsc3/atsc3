@@ -25,11 +25,11 @@ class Command(AuditCommand):
         if options["responder"]:
             responder = OcspResponder.objects.get(pk=options["responder"])
         else:
-            responder = OcspResponder.objects.filter(active=True).first()
-        if responder is None:
-            self.stderr.write(self.style.ERROR(
-                "no active OCSP responder; run issue-ocsp-responder"))
-            return
+            try:
+                responder = services.responder_for(cert)
+            except ValueError as exc:
+                self.stderr.write(self.style.ERROR(str(exc)))
+                return
         import datetime as dt
         resp = services.generate_ocsp(
             cert, responder=responder,

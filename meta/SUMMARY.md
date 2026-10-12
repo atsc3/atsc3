@@ -273,6 +273,18 @@ sharing a key path.  Tests: `make test-pki` = 57, `make test-ca` = 19 (publish
 CDT verifies, SMT verifies, rollover carries NextCert).  The customer-facing
 upload endpoint/Orders are Phase 2.
 
+**Sales + delivery (2026-10-12).**  `openatsc3-ca` gained the sales path.
+`Order` (migration `0005`) moves `pending -> paid -> fulfilled`; `create_checkout`
+opens a **Stripe Checkout Session** (the `stripe` SDK is injected, like the KMS
+signer, so tests run offline; `[stripe]` extra) and `POST /stripe/webhook/`
+verifies the signature and marks the order paid.  Manual approval (admin action
+or `approve-order`) issues the tenant CA + leaves, `publish`es the bundle, and
+delivers it: `certs.pem` + `cdt.xml.gz` + `ocsp-NN.der` (+ `signing.smt`) written
+to `OPENATSC3_CA_DELIVERY_DIR`, or uploaded to S3 with a **presigned URL** when
+`OPENATSC3_CA_S3_BUCKET` is set (`[aws]` extra, `S3Deliverer`).  No CRL is
+produced — revocation is the stapled OCSP.  Tests: `make test-pki` = 57,
+`make test-ca` = 26.
+
 ### Synthetic Transmission (new workstream, 2026-10-06)
 2. **Transmitter + certificate hook** — the inverse of the validated receive
    chain, built **in-repo** so every table/primitive is reused (no copied

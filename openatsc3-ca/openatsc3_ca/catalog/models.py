@@ -17,7 +17,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
-from .constants import CertStatus, Profile, RolloverState
+from .constants import CertStatus, OrderStatus, Profile, RolloverState
 
 
 class Tenant(models.Model):
@@ -44,9 +44,14 @@ class Tenant(models.Model):
 
 
 class Broadcaster(models.Model):
-    """A broadcast organization that owns signaling-signer certificates."""
+    """A broadcast organization that owns signaling-signer certificates.
 
-    name = models.CharField(max_length=128, unique=True)
+    Names are scoped to the owning tenant: the same broadcaster name may exist
+    in different tenants (or in the legacy ``tenant=None`` tree), but not twice
+    within one scope.
+    """
+
+    name = models.CharField(max_length=128)
     organization = models.CharField(max_length=255, blank=True)
     #: The registered bsid set for this organization (A/360 id-atsc-sdattr-bsid).
     bsids = ArrayField(models.IntegerField(), default=list, blank=True)
@@ -59,6 +64,16 @@ class Broadcaster(models.Model):
 
     class Meta:
         ordering = ["name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tenant", "name"],
+                condition=models.Q(tenant__isnull=False),
+                name="broadcaster_name_unique_per_tenant"),
+            models.UniqueConstraint(
+                fields=["name"],
+                condition=models.Q(tenant__isnull=True),
+                name="broadcaster_legacy_name_unique"),
+        ]
 
     def __str__(self) -> str:
         return self.name
@@ -284,6 +299,51 @@ class PublishedSignaling(models.Model):
 
     def __str__(self) -> str:
         return f"published {self.broadcaster} @ {self.signing_time}"
+
+
+class Order(models.Model):
+    """A customer order: paid via Stripe, manually approved, then fulfilled.
+
+    The customer is identified by email/organization until approval creates the
+    :class:`Tenant`; fulfillment issues the tenant CA, generates the signed
+    bundle, and delivers it.
+    """
+
+    email = models.EmailField(blank=True)
+    organization = models.CharField(max_length=255, blank=True)
+    #: Desired broadcaster identity; the tenant is created on approval.
+    broadcaster_name = models.CharField(max_length=128, blank=True)
+    bsids = ArrayField(models.IntegerField(), default=list, blank=True)
+
+    amount_cents = models.IntegerField(default=0)
+    currency = models.CharField(max_length=8, default="usd")
+    status = models.CharField(max_length=16, choices=OrderStatus.CHOICES,
+                              default=OrderStatus.PENDING, db_index=True)
+
+    stripe_session_id = models.CharField(max_length=255, blank=True)
+    stripe_payment_intent = models.CharField(max_length=255, blank=True)
+    checkout_url = models.CharField(max_length=1024, blank=True)
+
+    tenant = models.ForeignKey(
+        Tenant, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="orders")
+    broadcaster = models.ForeignKey(
+        Broadcaster, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="orders")
+
+    delivery_url = models.CharField(max_length=2048, blank=True)
+    paid_at = models.DateTimeField(null=True, blank=True)
+    fulfilled_at = models.DateTimeField(null=True, blank=True)
+    note = models.TextField(blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"order {self.pk} {self.email or self.organization} [{self.status}]"
 
 
 class SpecReference(models.Model):

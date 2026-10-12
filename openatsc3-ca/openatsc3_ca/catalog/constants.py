@@ -69,3 +69,25 @@ class RolloverState:
         (COMPLETED, "Completed"),
         (CANCELLED, "Cancelled"),
     ]
+
+
+class OrderStatus:
+    """Order lifecycle: paid via Stripe, manually approved, then fulfilled.
+
+    ``pending`` -> ``paid`` (webhook) -> ``fulfilled`` (manual approval issues
+    the tenant CA + bundle).  ``cancelled``/``refunded`` are terminal.
+    """
+
+    PENDING = "pending"
+    PAID = "paid"
+    FULFILLED = "fulfilled"
+    CANCELLED = "cancelled"
+    REFUNDED = "refunded"
+
+    CHOICES = [
+        (PENDING, "Pending checkout"),
+        (PAID, "Paid, awaiting approval"),
+        (FULFILLED, "Fulfilled (issued + delivered)"),
+        (CANCELLED, "Cancelled"),
+        (REFUNDED, "Refunded"),
+    ]

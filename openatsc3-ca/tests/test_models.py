@@ -78,3 +78,40 @@ def test_audit_event_is_append_only():
         event.save()
     with pytest.raises(ValidationError):
         event.delete()
+
+
+def test_broadcaster_names_are_scoped_per_tenant(ca):
+    from django.db import IntegrityError, transaction
+
+    from openatsc3_ca.catalog.models import Broadcaster, Tenant
+
+    acme = Tenant.objects.create(name="Acme", slug="acme")
+    beta = Tenant.objects.create(name="Beta", slug="beta")
+    Broadcaster.objects.create(name="SHARED", tenant=acme)
+    Broadcaster.objects.create(name="SHARED", tenant=beta)  # allowed: other tenant
+    assert Broadcaster.objects.filter(name="SHARED").count() == 2
+
+    with pytest.raises(IntegrityError):
+        with transaction.atomic():
+            Broadcaster.objects.create(name="SHARED", tenant=acme)
+
+    # The legacy (tenant=None) scope keeps its own name uniqueness.
+    Broadcaster.objects.create(name="LEGACY")
+    with pytest.raises(IntegrityError):
+        with transaction.atomic():
+            Broadcaster.objects.create(name="LEGACY")
+
+
+def test_issue_broadcaster_namespaces_by_tenant(ca):
+    from openatsc3_ca.catalog import services
+    from openatsc3_ca.catalog.models import Broadcaster, Tenant
+
+    acme = Tenant.objects.create(name="Acme", slug="acme")
+    beta = Tenant.objects.create(name="Beta", slug="beta")
+    for tenant in (acme, beta):
+        services.issue_tenant_ca(tenant)
+        services.issue_broadcaster("KXYZ", (551,), tenant=tenant)
+
+    assert Broadcaster.objects.filter(name="KXYZ").count() == 2
+    assert Broadcaster.objects.get(name="KXYZ", tenant=acme).tenant_id == acme.id
+    assert Broadcaster.objects.get(name="KXYZ", tenant=beta).tenant_id == beta.id

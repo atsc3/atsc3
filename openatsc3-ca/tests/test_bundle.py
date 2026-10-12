@@ -24,7 +24,7 @@ def _tenant_bundle(name="Acme", slug="acme", bcast="ACME-TV", bsid=540):
     signer = services.issue_broadcaster(bcast, (bsid,), tenant=tenant)
     services.issue_cdt_signer(bcast, (bsid,), tenant=tenant)
     responder = services.issue_ocsp_responder(tenant=tenant)
-    broadcaster = Broadcaster.objects.get(name=bcast)
+    broadcaster = Broadcaster.objects.get(name=bcast, tenant=tenant)
     return tenant, broadcaster, signer, responder
 
 
@@ -97,3 +97,17 @@ def test_complete_rollover_supersedes_current(ca):
     assert signer.status == "superseded"
     assert plan.state == "completed"
     assert services.current_signer(broadcaster).serial == next_signer.serial
+
+
+def test_export_materializes_tenant_and_responder_trees(ca):
+    """``export`` materializes the tenant CA tree and every responder cert."""
+    _tenant, _broadcaster, _signer, _responder = _tenant_bundle()
+    services.export_tree()
+
+    base = services.base_dir()
+    assert (base / "root" / "root.cert.pem").exists()
+    assert (base / "root" / "ocsp-responder.cert.pem").exists()
+    assert (base / "tenants" / "acme" / "issuing.cert.pem").exists()
+    assert (base / "tenants" / "acme" / "ocsp-responder.cert.pem").exists()
+    assert (base / "tenants" / "acme" / "broadcasters" / "ACME-TV"
+            / "signing.cert.pem").exists()

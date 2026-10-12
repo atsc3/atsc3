@@ -60,9 +60,15 @@ def wired(tmp_path):
                     organizational_unit="ATSC OCSP Responder",
                     organization="OpenATSC3"),
         resp_key, a.load_issuing(), a.load_issuing_key())
+    root_resp_key = keys.generate()
+    root_resp_cert = issue_ocsp_responder(
+        SubjectInfo(common_name="OpenATSC3 Root OCSP",
+                    organizational_unit="ATSC OCSP Responder",
+                    organization="OpenATSC3"),
+        root_resp_key, a.load_root(), a.load_root_key())
     store = ocsp.StatusStore()
 
-    def resp(cert, issuer):
+    def resp(cert, issuer, resp_cert, resp_key):
         return ocsp.respond(cert, issuer, resp_cert, resp_key, store,
                             this_update=now,
                             next_update=now + dt.timedelta(hours=20))
@@ -70,9 +76,10 @@ def wired(tmp_path):
     table = cdt.build(
         chain=[a.load_issuing().der()], signing_cert=signer,
         cdt_signer_cert=cdt_cert, cdt_signer_key=cdt_key,
-        ocsp_responses=[resp(a.load_issuing(), a.load_issuing()),
-                        resp(signer, a.load_issuing()),
-                        resp(cdt_cert, a.load_issuing())],
+        ocsp_responses=[resp(a.load_issuing(), a.load_root(),
+                             root_resp_cert, root_resp_key),
+                        resp(signer, a.load_issuing(), resp_cert, resp_key),
+                        resp(cdt_cert, a.load_issuing(), resp_cert, resp_key)],
         signing_time=now)
 
     # Signed LLS: an SLT (0x01) and a SystemTime (0x03), inside a

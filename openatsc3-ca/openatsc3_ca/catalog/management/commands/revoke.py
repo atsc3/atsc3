@@ -15,6 +15,8 @@ class Command(AuditCommand):
                             help="certificate serial (decimal)")
         parser.add_argument("--name", default=None,
                             help="revoke every GOOD signer of this broadcaster")
+        parser.add_argument("--tenant", default=None,
+                            help="tenant slug (disambiguates --name)")
 
     def handle(self, *args, **options):
         if not options["serial"] and not options["name"]:
@@ -30,8 +32,11 @@ class Command(AuditCommand):
                 return
             targets = [cert]
         elif options["name"]:
-            targets = list(Certificate.objects.filter(
-                broadcaster__name=options["name"], status="good"))
+            qs = Certificate.objects.filter(broadcaster__name=options["name"],
+                                            status="good")
+            if options["tenant"]:
+                qs = qs.filter(broadcaster__tenant__slug=options["tenant"])
+            targets = list(qs)
             if not targets:
                 self.stderr.write(self.style.ERROR(
                     f"no GOOD certificates for broadcaster {options['name']}"))

@@ -32,6 +32,7 @@ def now():
 def signed_cdt(authority, now):
     """A complete signed CDT: chain + CurrentCert + distinct CDT signer + OCSP."""
     root = authority.load_root()
+    root_key = authority.load_root_key()
     issuing = authority.load_issuing()
     issuing_key = authority.load_issuing_key()
     signer = authority.load_broadcaster("WHUT")
@@ -47,17 +48,27 @@ def signed_cdt(authority, now):
                     organizational_unit="ATSC OCSP Responder",
                     organization="OpenATSC3"),
         resp_key, issuing, issuing_key)
+    # The offline root authorizes the responder that signs the issuing CA's own
+    # OCSP; the issuing CA authorizes the responder that signs its leaves' OCSP.
+    # A CA's OCSP must be signed by its issuer (A/360 5.2.2.6 item 5, RFC 6960).
+    root_resp_key = keys.generate()
+    root_resp_cert = issue_ocsp_responder(
+        SubjectInfo(common_name="OpenATSC3 Root OCSP",
+                    organizational_unit="ATSC OCSP Responder",
+                    organization="OpenATSC3"),
+        root_resp_key, root, root_key)
     store = ocsp.StatusStore()
 
-    def resp(cert, issuer):
-        return ocsp.respond(cert, issuer, resp_cert, resp_key, store,
+    def resp(cert, issuer, responder, responder_key):
+        return ocsp.respond(cert, issuer, responder, responder_key, store,
                             this_update=now, next_update=now + dt.timedelta(hours=20))
 
     table = cdt.build(
         chain=[issuing.der()], signing_cert=signer, cdt_signer_cert=cdt_cert,
         cdt_signer_key=cdt_key,
-        ocsp_responses=[resp(issuing, issuing), resp(signer, issuing),
-                        resp(cdt_cert, issuing)],
+        ocsp_responses=[resp(issuing, root, root_resp_cert, root_resp_key),
+                        resp(signer, issuing, resp_cert, resp_key),
+                        resp(cdt_cert, issuing, resp_cert, resp_key)],
         signing_time=now)
     return {
         "root": root, "issuing": issuing, "issuing_key": issuing_key,

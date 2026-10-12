@@ -15,6 +15,7 @@ from .models import (
     Certificate,
     OcspResponder,
     OcspResponse,
+    Order,
     PublishedSignaling,
     RolloverPlan,
     SpecReference,
@@ -55,6 +56,28 @@ class CertificateAdmin(admin.ModelAdmin):
                             actor=getattr(request.user, "username", "admin"))
             count += 1
         self.message_user(request, f"revoked {count} certificate(s)")
+
+
+@admin.register(Order)
+class OrderAdmin(admin.ModelAdmin):
+    list_display = ("id", "email", "organization", "status", "amount_cents",
+                    "tenant", "fulfilled_at", "created_at")
+    list_filter = ("status", "currency")
+    search_fields = ("email", "organization", "stripe_session_id",
+                     "stripe_payment_intent")
+    readonly_fields = ("stripe_session_id", "stripe_payment_intent", "checkout_url",
+                       "delivery_url", "paid_at", "fulfilled_at", "tenant",
+                       "broadcaster", "created_at", "updated_at")
+    actions = ("approve_orders",)
+
+    @admin.action(description="Approve and fulfill selected paid orders")
+    def approve_orders(self, request, queryset):
+        actor = getattr(request.user, "username", "admin")
+        count = 0
+        for order in queryset.filter(status="paid"):
+            services.fulfill_order(order, actor=actor)
+            count += 1
+        self.message_user(request, f"fulfilled {count} order(s)")
 
 
 @admin.register(OcspResponder)

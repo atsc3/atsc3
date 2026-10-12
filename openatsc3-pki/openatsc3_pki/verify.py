@@ -268,7 +268,12 @@ def verify_certification_data(cdt, trust_roots: Sequence[Certificate],
         if der is None:
             return Verdict(False,
                            f"no OCSP response for serial {c.cert.serial_number}"), None
-        issuer = by_ski.get(_issuer_ski(cert=c, certs=certs, verified=verified))
+        # The OCSP response for a chain certificate is authenticated by \emph{its
+        # issuer} -- which for a CA that is a child of the trusted root is the
+        # root itself, not a certificate carried in the CDT (A/360 5.2.2.6 item
+        # 5, RFC 6960 4.2.2.2).  Resolve it from the built chain, so a CA cannot
+        # self-authorize a "good" for its own revocation.
+        issuer = _chain_issuer(verified.get(c.subject_key_identifier()))
         reason = _verify_ocsp(der, c, issuer or c, now, cdt.ocsp_refresh)
         if reason:
             return Verdict(False, reason), None
@@ -298,11 +303,10 @@ def _same_public_key(a: Certificate, b: Optional[Certificate]) -> bool:
     return pa == pb
 
 
-def _issuer_ski(cert: Certificate, certs: Sequence[Certificate],
-                verified: Dict[bytes, _Chain]) -> Optional[bytes]:
-    chain = verified.get(cert.subject_key_identifier())
+def _chain_issuer(chain: Optional[_Chain]) -> Optional[Certificate]:
+    """The issuer certificate of a verified chain (its parent), or ``None``."""
     if chain and len(chain.path) > 1:
-        return chain.path[1].subject_key_identifier()
+        return chain.path[1]
     return None
 
 
@@ -387,10 +391,7 @@ def _ocsp_for(keys: CertifiedKeys, serial: int) -> Optional[bytes]:
 
 
 def _issuer_cert(keys: CertifiedKeys, cert: Certificate) -> Optional[Certificate]:
-    chain = keys.verified.get(cert.subject_key_identifier())
-    if chain and len(chain.path) > 1:
-        return chain.path[1]
-    return None
+    return _chain_issuer(keys.verified.get(cert.subject_key_identifier()))
 
 
 def load_trust_roots(paths: Sequence[str]) -> List[Certificate]:

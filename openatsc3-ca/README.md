@@ -67,28 +67,51 @@ python manage.py createsuperuser      # admin at /admin/
 python manage.py init-root
 python manage.py issue-ca
 python manage.py issue-tenant-ca --tenant acme           # per-tenant intermediate
+python manage.py issue-root-responder                     # root-delegated revocation responder
 python manage.py issue-ocsp-responder
+python manage.py issue-ocsp-responder --tenant acme       # responder for a tenant's leaves
 python manage.py issue-broadcaster --name WHUT --bsid 540
 python manage.py issue-broadcaster --tenant acme --name ACME-TV --bsid 541
 python manage.py issue-cdt-signer --tenant acme --name ACME-TV --bsid 541
 python manage.py publish --name ACME-TV                    # CDT 0x06
-python manage.py publish --name ACME-TV --lls 0x01:13:slt.xml   # CDT + signed SMT 0x07
+python manage.py publish --name ACME-TV --tenant acme --lls 0x01:13:slt.xml   # CDT + signed SMT 0x07
 python manage.py start-rollover --current <serial> --next <serial>
 python manage.py complete-rollover --plan <id>
+python manage.py create-checkout --id <order>     # Stripe Checkout Session
+python manage.py approve-order --id <order>       # issue tenant CA + deliver
 python manage.py ocsp --serial <serial>
 python manage.py revoke --serial <serial>   # persistent; OCSP now says revoked
-python manage.py export                     # DB -> PEM tree
-python manage.py import-tree --path out/pkitest   # legacy tree -> DB
+python manage.py export                     # DB -> PEM tree (root + tenants + responders)
+python manage.py import-tree --path out/pkitest   # on-disk tree -> DB (legacy + tenants + responders)
 python manage.py audit
 ```
 
 
-Models: `Tenant`, `Certificate`, `Broadcaster`, `OcspResponse`,
+Models: `Tenant`, `Certificate`, `Broadcaster`, `Order`, `OcspResponse`,
 `OcspResponder`, `RolloverPlan` (the window constraint is already enforced),
 `PublishedSignaling`, `SpecReference`, and an append-only `AuditEvent`.
 `Certificate` records a key either as an on-disk path (+ SHA-256) or as a
 `kms_key_id`; `--kms-key-id` on the issue commands installs a non-exportable
-KMS key (install the `[kms]` extra).
+KMS key (install the `[kms]` extra). Broadcaster names are **scoped per tenant**
+(unique within a tenant, and separately unique in the legacy `tenant=None`
+tree), so two customers may use the same station name.
+
+## Sales + delivery (Phase 2)
+
+- **Orders.** An `Order` (email/organization/broadcaster/bsids/amount) moves
+  `pending -> paid -> fulfilled`. `create_checkout` opens a **Stripe Checkout
+  Session** (`[stripe]` extra; the `stripe` SDK is injected so tests run
+  offline); `POST /stripe/webhook/` verifies the signature and marks the order
+  `paid`.
+- **Manual approval.** The admin `Order` action (or `approve-order`) issues the
+  tenant CA + leaves, `publish`es the signed bundle, and **delivers** it. The
+  bundle (`certs.pem`, `cdt.xml.gz`, `ocsp-NN.der`, optional `signing.smt`) is
+  written to `OPENATSC3_CA_DELIVERY_DIR`, or uploaded to S3 with a **presigned
+  URL** when `OPENATSC3_CA_S3_BUCKET` is set (`[aws]` extra). A CRL is not
+  produced — revocation is carried by the stapled OCSP.
+- Settings: `OPENATSC3_CA_STRIPE_SECRET_KEY`, `..._WEBHOOK_SECRET`,
+  `..._PUBLIC_BASE_URL`, `..._DELIVERY_DIR`, `..._S3_BUCKET`/`_S3_REGION`,
+  `..._DELIVERY_TTL`.
 
 ## Signed bundle (`publish`)
 
@@ -112,14 +135,17 @@ constraints, revocation persistence, OCSP status transitions, the legacy-tree
 import (idempotent + reversible), the end-to-end gate where a **revoked
 signer makes the receiver's `verify_certification_data` fail**, **per-tenant
 CAs** (revoking a tenant intermediate fails verification; revoking one tenant
-leaves another valid), and the signed bundle (`publish` builds a verifiable CDT
-and signs an SMT; a rollover window carries the NextCert).
+leaves another valid), the signed bundle (`publish` builds a verifiable CDT
+and signs an SMT; a rollover window carries the NextCert), and **sales**
+(Checkout session, webhook -> paid, approval issues + delivers the bundle,
+S3 presign).
 
 ## Status
 
-Phase 0/1 is done: persistent revocation, a real `revoke`, the
-`export`/`import-tree` tree round trip, per-tenant intermediate CAs (`Tenant`
-model + migration `0004`, `issue-tenant-ca`, KMS-backed keys), and the signed
-bundle (`publish` CDT `0x06` + signed SMT `0x07`, `issue-cdt-signer`,
-`start-rollover`/`complete-rollover`). Phase 2 (customer-facing upload/DRF,
-Orders + Stripe, delivery) and Phase 3 (offline-root ceremony) remain.
+Phases 0–2 are done: per-tenant intermediate CAs (`Tenant` + migration `0004`,
+`issue-tenant-ca`, KMS-backed keys); the signed bundle (`publish` CDT `0x06` +
+signed SMT `0x07`, `issue-cdt-signer`, `start-rollover`/`complete-rollover`);
+and sales/delivery (`Order` + migration `0005`, Stripe Checkout + webhook,
+manual approval -> issue + publish + deliver, S3 presigned URLs). Phase 3
+(infra: VPC/RDS/App Runner/S3+CloudFront/IAM; offline-root ceremony) and Phase 4
+(hardening) remain.

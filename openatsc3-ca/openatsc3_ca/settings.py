@@ -137,3 +137,21 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 #: Root of the materialized PEM tree (root/, issuing/, broadcasters/<name>/).
 OPENATSC3_CA_BASE_DIR = os.environ.get(
     "OPENATSC3_CA_BASE_DIR", str(BASE_DIR / "ca-tree"))
+
+#: Where fulfilled bundles are delivered when no S3 bucket is configured.
+OPENATSC3_CA_DELIVERY_DIR = os.environ.get(
+    "OPENATSC3_CA_DELIVERY_DIR", str(BASE_DIR / "deliveries"))
+#: S3 artifact bucket for signed-URL delivery; empty selects the local deliverer.
+OPENATSC3_CA_S3_BUCKET = os.environ.get("OPENATSC3_CA_S3_BUCKET", "")
+OPENATSC3_CA_S3_REGION = os.environ.get("OPENATSC3_CA_S3_REGION", "")
+#: Seconds a delivered bundle's signed URL stays valid.
+OPENATSC3_CA_DELIVERY_TTL = int(os.environ.get("OPENATSC3_CA_DELIVERY_TTL", "3600"))
+
+#: Stripe Checkout (Phase 2 sales).  Empty key means checkout is unavailable.
+OPENATSC3_CA_STRIPE_SECRET_KEY = os.environ.get(
+    "OPENATSC3_CA_STRIPE_SECRET_KEY", "")
+OPENATSC3_CA_STRIPE_WEBHOOK_SECRET = os.environ.get(
+    "OPENATSC3_CA_STRIPE_WEBHOOK_SECRET", "")
+#: Absolute base URL used for Stripe Checkout success/cancel redirects.
+OPENATSC3_CA_PUBLIC_BASE_URL = os.environ.get(
+    "OPENATSC3_CA_PUBLIC_BASE_URL", "http://localhost:8000")

@@ -14,13 +14,26 @@ class Command(AuditCommand):
 
     def add_command_arguments(self, parser):
         parser.add_argument("--name", required=True, help="broadcaster name")
+        parser.add_argument("--tenant", default=None,
+                            help="tenant slug (disambiguates a name shared "
+                                 "across tenants)")
         parser.add_argument("--lls", action="append", default=[],
                             metavar="TID:VER:FILE",
                             help="LLS table to sign (repeatable), e.g. 0x01:13:slt.xml")
         parser.add_argument("--refresh-hours", type=int, default=20)
 
     def handle(self, *args, **options):
-        broadcaster = Broadcaster.objects.filter(name=options["name"]).first()
+        matches = Broadcaster.objects.filter(name=options["name"])
+        if options["tenant"]:
+            matches = matches.filter(tenant__slug=options["tenant"])
+        if matches.count() > 1:
+            slugs = ", ".join(sorted(m.tenant.slug if m.tenant_id else "(legacy)"
+                                     for m in matches))
+            self.stderr.write(self.style.ERROR(
+                f"broadcaster {options['name']!r} is ambiguous; pass --tenant "
+                f"(one of: {slugs})"))
+            return
+        broadcaster = matches.first()
         if broadcaster is None:
             self.stderr.write(self.style.ERROR(
                 f"no broadcaster named {options['name']}"))

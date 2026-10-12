@@ -165,6 +165,8 @@ def _subject(common_name, organization):
 
 def test_cdt_with_next_cert_carries_rollover_window(authority, now):
     """A CertReplacement CDT carries NextCert and verifies (A/360 5.2.2.2)."""
+    root = authority.load_root()
+    root_key = authority.load_root_key()
     issuing = authority.load_issuing()
     issuing_key = authority.load_issuing_key()
     signer = authority.load_broadcaster("WHUT")
@@ -179,10 +181,16 @@ def test_cdt_with_next_cert_carries_rollover_window(authority, now):
                     organizational_unit="ATSC OCSP Responder",
                     organization="OpenATSC3"),
         resp_key, issuing, issuing_key)
+    root_resp_key = keys.generate()
+    root_resp_cert = issue_ocsp_responder(
+        SubjectInfo(common_name="OpenATSC3 Root OCSP",
+                    organizational_unit="ATSC OCSP Responder",
+                    organization="OpenATSC3"),
+        root_resp_key, root, root_key)
     store = ocsp.StatusStore()
 
-    def resp(c):
-        return ocsp.respond(c, issuing, resp_cert, resp_key, store,
+    def resp(c, issuer, responder, responder_key):
+        return ocsp.respond(c, issuer, responder, responder_key, store,
                             this_update=now, next_update=now + dt.timedelta(hours=20))
 
     next_from = now + dt.timedelta(hours=2)
@@ -190,8 +198,10 @@ def test_cdt_with_next_cert_carries_rollover_window(authority, now):
     table = cdt.build(
         chain=[issuing.der()], signing_cert=signer, cdt_signer_cert=cdt_cert,
         cdt_signer_key=cdt_key,
-        ocsp_responses=[resp(issuing), resp(signer), resp(cdt_cert),
-                        resp(next_cert)],
+        ocsp_responses=[resp(issuing, root, root_resp_cert, root_resp_key),
+                        resp(signer, issuing, resp_cert, resp_key),
+                        resp(cdt_cert, issuing, resp_cert, resp_key),
+                        resp(next_cert, issuing, resp_cert, resp_key)],
         next_cert=next_cert, next_cert_from=next_from,
         current_cert_until=current_until, signing_time=now)
 

@@ -154,13 +154,17 @@ def test_external_signer_end_to_end():
     responder_signer = kms(keys.SIGNER_CURVE)
     responder = issue_ocsp_responder(
         _subject("KMS OCSP", "OpenATSC3"), responder_signer, ca, ca_signer)
+    root_responder_signer = kms(keys.SIGNER_CURVE)
+    root_responder = issue_ocsp_responder(
+        _subject("KMS Root OCSP", "OpenATSC3"), root_responder_signer,
+        root, root_signer)
 
     assert leaf.cert.public_key().public_numbers() == \
         leaf_signer.public.public_numbers()
 
     store = ocsp.StatusStore()
 
-    def response(cert, issuer):
+    def response(cert, issuer, responder, responder_signer):
         return ocsp.respond(cert, issuer, responder, responder_signer, store,
                             this_update=now,
                             next_update=now + dt.timedelta(hours=20))
@@ -168,8 +172,9 @@ def test_external_signer_end_to_end():
     table = cdt.build(
         chain=[ca.der()], signing_cert=leaf, cdt_signer_cert=cdt_cert,
         cdt_signer_key=cdt_signer,
-        ocsp_responses=[response(ca, ca), response(leaf, ca),
-                        response(cdt_cert, ca)],
+        ocsp_responses=[response(ca, root, root_responder, root_responder_signer),
+                        response(leaf, ca, responder, responder_signer),
+                        response(cdt_cert, ca, responder, responder_signer)],
         signing_time=now)
     parsed = cdt.parse_certification_data(table.gzip_bytes())
     verdict, certified = verify.verify_certification_data(parsed, [root], now=now)

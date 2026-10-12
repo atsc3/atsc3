@@ -20,11 +20,17 @@ from openatsc3_ca.catalog.models import Certificate
 pytestmark = pytest.mark.django_db
 
 
-def _build_cdt(ca, signer, responder, signing_time):
-    """Assemble a signed CDT with a distinct CDT signer and fresh OCSP."""
+def _build_cdt(ca, signer, responder, signing_time, *, ca_responder=None):
+    """Assemble a signed CDT with a distinct CDT signer and fresh OCSP.
+
+    The issuing CA's own OCSP is stapled from the root-authorized responder;
+    its leaves' OCSP from the issuing CA's responder (A/360 5.2.2.6 item 5).
+    ``ca_responder`` overrides the issuer's responder (to forge a response).
+    """
     from openatsc3_pki import cdt, keys, ocsp
     from openatsc3_pki.x509 import SubjectInfo, issue_signaling_signer
 
+    root = services.certificate_x509(ca["root"])
     issuing = services.certificate_x509(ca["issuing"])
     issuing_key = _issuing_key(ca)
     signer_x = services.certificate_x509(signer)
@@ -37,17 +43,22 @@ def _build_cdt(ca, signer, responder, signing_time):
         cdt_key, issuing, issuing_key, (540,))
     resp = services.certificate_x509(responder.certificate)
     resp_key = keys.load_private(responder.key_path)
+    ca_resp = ca_responder or ca["root_responder"]
+    ca_resp_cert = services.certificate_x509(ca_resp.certificate)
+    ca_resp_key = keys.load_private(ca_resp.key_path)
     store = services.status_store()
 
-    def ocsp_for(cert):
-        return ocsp.respond(cert, issuing, resp, resp_key, store,
+    def ocsp_for(cert, issuer, r, rk):
+        return ocsp.respond(cert, issuer, r, rk, store,
                             this_update=signing_time,
                             next_update=signing_time + dt.timedelta(hours=20))
 
     table = cdt.build(
         chain=[issuing.der()], signing_cert=signer_x, cdt_signer_cert=cdt_cert,
         cdt_signer_key=cdt_key,
-        ocsp_responses=[ocsp_for(issuing), ocsp_for(signer_x), ocsp_for(cdt_cert)],
+        ocsp_responses=[ocsp_for(issuing, root, ca_resp_cert, ca_resp_key),
+                        ocsp_for(signer_x, issuing, resp, resp_key),
+                        ocsp_for(cdt_cert, issuing, resp, resp_key)],
         signing_time=signing_time)
     return table, signer_x
 
@@ -105,11 +116,15 @@ def test_ocsp_status_follows_revocation(ca):
     assert latest.status == "revoked"
 
 
-def _build_tenant_cdt(tenant, signer, responder, signing_time):
+def _build_tenant_cdt(tenant, signer, responder, signing_time, *,
+                      ca_responder=None):
     """Assemble a signed CDT for a tenant, with stapled OCSP per certificate.
 
     The chain carries the tenant intermediate CA (the root stays a trust
-    anchor, out of band); the CDT signer and responder are the tenant's own.
+    anchor, out of band).  The tenant CA's own OCSP is stapled from the
+    root-authorized responder; its leaves' from the tenant's responder
+    (A/360 5.2.2.6 item 5).  ``ca_responder`` overrides the tenant CA's
+    responder (to forge a self-authorized response).
     """
     from openatsc3_pki import cdt, keys, ocsp
     from openatsc3_pki.x509 import SubjectInfo, issue_signaling_signer
@@ -127,17 +142,24 @@ def _build_tenant_cdt(tenant, signer, responder, signing_time):
         cdt_key, issuing, issuing_key, (540,))
     resp = services.certificate_x509(responder.certificate)
     resp_key = keys.load_private(responder.key_path)
+    root_resp = services.root_responder()
+    root_x509 = services.certificate_x509(root_resp.certificate.parent)
+    ca_resp = ca_responder or root_resp
+    ca_resp_cert = services.certificate_x509(ca_resp.certificate)
+    ca_resp_key = keys.load_private(ca_resp.key_path)
     store = services.status_store()
 
-    def ocsp_for(cert):
-        return ocsp.respond(cert, issuing, resp, resp_key, store,
+    def ocsp_for(cert, issuer, r, rk):
+        return ocsp.respond(cert, issuer, r, rk, store,
                             this_update=signing_time,
                             next_update=signing_time + dt.timedelta(hours=20))
 
     table = cdt.build(
         chain=[issuing.der()], signing_cert=signer_x, cdt_signer_cert=cdt_cert,
         cdt_signer_key=cdt_key,
-        ocsp_responses=[ocsp_for(issuing), ocsp_for(signer_x), ocsp_for(cdt_cert)],
+        ocsp_responses=[ocsp_for(issuing, root_x509, ca_resp_cert, ca_resp_key),
+                        ocsp_for(signer_x, issuing, resp, resp_key),
+                        ocsp_for(cdt_cert, issuing, resp, resp_key)],
         signing_time=signing_time)
     return table, signer_x
 
@@ -200,3 +222,27 @@ def test_revoking_one_tenant_leaves_another_valid(ca):
     table_b, _ = _build_tenant_cdt(beta, signer_b, resp_b, now)
     verdict_b, _ = verify.verify_certification_data(table_b, roots, now=now)
     assert verdict_b.ok, verdict_b.reason
+
+
+def test_self_forged_tenant_ca_ocsp_is_rejected(ca):
+    """A tenant must not be able to self-authorize a 'good' for its own CA.
+
+    The tenant CA's OCSP has to be signed by a root-authorized responder; a
+    response stapled with the tenant's own responder must not authenticate, so
+    revoking a compromised tenant CA stays enforceable (A/360 5.2.2.6 item 5).
+    """
+    from openatsc3_pki import verify
+    from openatsc3_ca.catalog.models import Tenant
+
+    tenant = Tenant.objects.create(name="Acme", slug="acme")
+    services.issue_tenant_ca(tenant)
+    signer = services.issue_broadcaster("ACME-TV", (540,), tenant=tenant)
+    responder = services.issue_ocsp_responder(tenant=tenant)
+    now = timezone.now().replace(microsecond=0)
+    roots = [services.certificate_x509(ca["root"])]
+
+    table, _ = _build_tenant_cdt(tenant, signer, responder, now,
+                                 ca_responder=responder)
+    verdict, _ = verify.verify_certification_data(table, roots, now=now)
+    assert not verdict.ok
+    assert "issuer" in verdict.reason or "responder" in verdict.reason

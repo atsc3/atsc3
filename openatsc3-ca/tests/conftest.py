@@ -21,10 +21,12 @@ def ca_base(tmp_path, settings):
 
 @pytest.fixture
 def ca(ca_base):
-    """A ready ledger: root + issuing CA + active OCSP responder."""
+    """A ready ledger: root + issuing CA + OCSP responders."""
     from openatsc3_ca.catalog import services
 
     root = services.issue_root()
     issuing = services.issue_issuing()
+    root_responder = services.issue_root_responder()
     responder = services.issue_ocsp_responder()
-    return {"root": root, "issuing": issuing, "responder": responder}
+    return {"root": root, "issuing": issuing,
+            "root_responder": root_responder, "responder": responder}
