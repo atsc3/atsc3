@@ -257,6 +257,22 @@ receiver's `verify_certification_data` fail, and revoking one tenant leaves
 another's CDT valid.  Tests: `make test-pki` = 56, `make test-ca` = 15.
 Offline-root ceremony and the root-in-separate-account split remain Phase 3.
 
+**Signed bundle (2026-10-12).**  `openatsc3-ca` now assembles and signs the
+customer's bundle.  `services.publish` builds the **CertificationData (`0x06`)**
+from the ledger — the issuing/tenant CA chain, the CurrentCert, the distinct CDT
+signer (`issue_cdt_signer`, profile `CDT_SIGNER`; A/360 5.2.2.2 requires it differ
+from the signaling keys), and a fresh stapled OCSP per certificate — and, given
+LLS tables, signs them into a **SignedMultiTable (`0x07`)** with the CurrentCert
+(A/331 6.7).  An open rollover window adds the `CertReplacement` element and
+carries the NextCert; `cdt.build` now includes the NextCert certificate in
+`Certificates`.  New commands `publish`, `issue-cdt-signer`,
+`start-rollover`/`complete-rollover`; files land under `published/<broadcaster>/`
+and a `PublishedSignaling` snapshot is recorded.  The per-leaf `label` on
+`ca.issue_broadcaster` keeps the signaling signer and the CDT signer from
+sharing a key path.  Tests: `make test-pki` = 57, `make test-ca` = 19 (publish
+CDT verifies, SMT verifies, rollover carries NextCert).  The customer-facing
+upload endpoint/Orders are Phase 2.
+
 ### Synthetic Transmission (new workstream, 2026-10-06)
 2. **Transmitter + certificate hook** — the inverse of the validated receive
    chain, built **in-repo** so every table/primitive is reused (no copied

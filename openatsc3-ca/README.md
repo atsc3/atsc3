@@ -70,12 +70,18 @@ python manage.py issue-tenant-ca --tenant acme           # per-tenant intermedia
 python manage.py issue-ocsp-responder
 python manage.py issue-broadcaster --name WHUT --bsid 540
 python manage.py issue-broadcaster --tenant acme --name ACME-TV --bsid 541
+python manage.py issue-cdt-signer --tenant acme --name ACME-TV --bsid 541
+python manage.py publish --name ACME-TV                    # CDT 0x06
+python manage.py publish --name ACME-TV --lls 0x01:13:slt.xml   # CDT + signed SMT 0x07
+python manage.py start-rollover --current <serial> --next <serial>
+python manage.py complete-rollover --plan <id>
 python manage.py ocsp --serial <serial>
 python manage.py revoke --serial <serial>   # persistent; OCSP now says revoked
 python manage.py export                     # DB -> PEM tree
 python manage.py import-tree --path out/pkitest   # legacy tree -> DB
 python manage.py audit
 ```
+
 
 Models: `Tenant`, `Certificate`, `Broadcaster`, `OcspResponse`,
 `OcspResponder`, `RolloverPlan` (the window constraint is already enforced),
@@ -84,6 +90,16 @@ Models: `Tenant`, `Certificate`, `Broadcaster`, `OcspResponse`,
 `kms_key_id`; `--kms-key-id` on the issue commands installs a non-exportable
 KMS key (install the `[kms]` extra).
 
+## Signed bundle (`publish`)
+
+`publish` assembles the customer's **CertificationData (`0x06`)** from the
+ledger — the issuing/tenant CA chain, the CurrentCert, the distinct CDT signer,
+and a fresh stapled OCSP per certificate — and, when `--lls` tables are given,
+signs them into an **LLS SignedMultiTable (`0x07`)** with the CurrentCert
+(A/331 6.7). An open rollover window adds the `CertReplacement` element and
+carries the NextCert. Output files land under `published/<broadcaster>/` and a
+`PublishedSignaling` snapshot is recorded. (A customer-facing upload endpoint is
+Phase 2; today the operator supplies tables via `--lls`.)
 ## Tests
 
 ```bash
@@ -93,15 +109,17 @@ make test PYTHON=.venv-ca/bin/python
 
 The suite runs against the embedded PostgreSQL and covers the model
 constraints, revocation persistence, OCSP status transitions, the legacy-tree
-import (idempotent + reversible), and the end-to-end gate where a **revoked
-signer makes the receiver's `verify_certification_data` fail**.  It also covers
-**per-tenant CAs**: revoking a tenant intermediate fails verification, while
-revoking one tenant leaves another tenant's CDT valid.
+import (idempotent + reversible), the end-to-end gate where a **revoked
+signer makes the receiver's `verify_certification_data` fail**, **per-tenant
+CAs** (revoking a tenant intermediate fails verification; revoking one tenant
+leaves another valid), and the signed bundle (`publish` builds a verifiable CDT
+and signs an SMT; a rollover window carries the NextCert).
 
 ## Status
 
 Phase 0/1 is done: persistent revocation, a real `revoke`, the
-`export`/`import-tree` tree round trip, and per-tenant intermediate CAs
-(`Tenant` model + migration `0004`, `issue-tenant-ca`, KMS-backed keys).  Phase 2
-(rollover/renew, `publish`) and Phase 3 (content keys, DRF, offline-root
-ceremony) remain.
+`export`/`import-tree` tree round trip, per-tenant intermediate CAs (`Tenant`
+model + migration `0004`, `issue-tenant-ca`, KMS-backed keys), and the signed
+bundle (`publish` CDT `0x06` + signed SMT `0x07`, `issue-cdt-signer`,
+`start-rollover`/`complete-rollover`). Phase 2 (customer-facing upload/DRF,
+Orders + Stripe, delivery) and Phase 3 (offline-root ceremony) remain.

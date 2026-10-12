@@ -160,9 +160,15 @@ def build(
     ``chain`` is the DER CA chain (issuing CA first) authenticating
     ``signing_cert``.  The CDT is signed by a *different* key from the
     signaling signers, ``cdt_signer_cert``/``cdt_signer_key`` (A/360 5.2.2.2).
+    When ``next_cert`` is given its certificate is carried in ``Certificates``
+    too (A/360 5.2.2.2 CertReplacement), so a receiver staples one OCSP
+    response per certificate.
     """
+    certificates = tuple(chain) + (signing_cert.der(), cdt_signer_cert.der())
+    if next_cert is not None:
+        certificates = certificates + (next_cert.der(),)
     placeholder = CertificationData(
-        certificates=tuple(chain) + (signing_cert.der(), cdt_signer_cert.der()),
+        certificates=certificates,
         current_cert=signing_cert.subject_key_identifier(),
         cmssigneddata=b"",
         ocsp_responses=tuple(ocsp_responses),

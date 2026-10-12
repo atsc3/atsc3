@@ -24,6 +24,7 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from openatsc3_pki import ca as pki_ca
+from openatsc3_pki import cdt as pki_cdt
 from openatsc3_pki import keys as pki_keys
 from openatsc3_pki import ocsp as pki_ocsp
 from openatsc3_pki import x509 as pki_x509
@@ -32,13 +33,15 @@ from openatsc3_pki.x509 import SubjectInfo
 from cryptography import x509 as _x509
 from cryptography.x509.oid import ExtensionOID, NameOID
 
-from .constants import OCSP_REFRESH_DEFAULT, CertStatus, Profile
+from .constants import OCSP_REFRESH_DEFAULT, CertStatus, Profile, RolloverState
 from .models import (
     AuditEvent,
     Broadcaster,
     Certificate,
     OcspResponder,
     OcspResponse,
+    PublishedSignaling,
+    RolloverPlan,
     Tenant,
 )
 
@@ -73,6 +76,11 @@ def sha256_file(path: str) -> str:
         for block in iter(lambda: fh.read(65536), b""):
             h.update(block)
     return h.hexdigest()
+
+
+def _safe(name: str) -> str:
+    """Filesystem-safe path element for a broadcaster name."""
+    return name.replace("/", "_").replace("..", "_")
 
 
 # --- audit -----------------------------------------------------------------
@@ -221,12 +229,17 @@ def _tenant_ca_signer(tenant: Tenant):
     return None
 
 
+def _cert_signer(cert: Certificate):
+    """A certificate's signing key: a KMS backend or the on-disk key file."""
+    if cert.kms_key_id:
+        from openatsc3_pki.signer import KmsSigner
+        return KmsSigner.for_key(cert.kms_key_id)
+    return pki_keys.load_private(cert.key_path)
+
+
 def _responder_signer(responder: OcspResponder):
     """The OCSP responder's signing key: a KMS backend or the on-disk key."""
-    if responder.certificate.kms_key_id:
-        from openatsc3_pki.signer import KmsSigner
-        return KmsSigner.for_key(responder.certificate.kms_key_id)
-    return pki_keys.load_private(responder.key_path)
+    return _cert_signer(responder.certificate)
 
 
 def issue_root(*, common_name: str = "OpenATSC3 Root CA",
@@ -278,12 +291,22 @@ def issue_tenant_ca(tenant: Tenant, *, common_name: Optional[str] = None,
     return result.certificate
 
 
-def issue_broadcaster(name: str, bsids: Iterable[int], *,
-                      tenant: Optional[Tenant] = None,
-                      common_name: Optional[str] = None, days: int = 365,
-                      organization: Optional[str] = None,
-                      kms_key_id: str = "", key=None,
-                      actor: str = "system") -> Certificate:
+def _issue_leaf(profile: str, action: str, label: str, name: str,
+                bsids: Iterable[int], *,
+                tenant: Optional[Tenant] = None,
+                common_name: Optional[str] = None, days: int = 365,
+                organization: Optional[str] = None,
+                kms_key_id: str = "", key=None,
+                actor: str = "system") -> Certificate:
+    """Issue a signaling-signer leaf for ``name`` under ``profile``.
+
+    Shared by :func:`issue_broadcaster` (CurrentCert/NextCert) and
+    :func:`issue_cdt_signer` (the distinct CertificationData signing key,
+    A/360 5.2.2.2).  ``label`` names the leaf's files, so the two profiles do
+    not share a key path.  ``tenant`` selects the issuing CA; ``key``/
+    ``kms_key_id`` inject an external signer (KMS), writing no key file when
+    external.
+    """
     bsids = tuple(int(b) for b in bsids)
     defaults = {"organization": organization or name, "bsids": list(bsids)}
     if tenant is not None:
@@ -304,18 +327,47 @@ def issue_broadcaster(name: str, bsids: Iterable[int], *,
     ca_key = _tenant_ca_signer(tenant) if tenant is not None else None
     cert = authority.issue_broadcaster(name, bsids, common_name=common_name,
                                        days=days, tenant=tenant_slug,
-                                       key=signer, ca_key=ca_key)
+                                       key=signer, ca_key=ca_key, label=label)
     key_path = ("" if signer is not None else
                 os.path.join(authority.broadcaster_dir(name, tenant_slug),
-                             "signing.key.pem"))
+                             f"{label}.key.pem"))
     with transaction.atomic():
-        result = record_certificate(cert, Profile.SIGNALING_SIGNER,
-                                    key_path=key_path, kms_key_id=kms_key_id,
+        result = record_certificate(cert, profile, key_path=key_path,
+                                    kms_key_id=kms_key_id,
                                     broadcaster=broadcaster, tenant=tenant)
-        audit("issue-broadcaster", actor=actor, target=result.certificate,
-              detail={"name": name, "bsids": list(bsids),
-                      "tenant": tenant_slug})
+        audit(action, actor=actor, target=result.certificate,
+              detail={"name": name, "bsids": list(bsids), "tenant": tenant_slug})
     return result.certificate
+
+
+def issue_broadcaster(name: str, bsids: Iterable[int], *,
+                      tenant: Optional[Tenant] = None,
+                      common_name: Optional[str] = None, days: int = 365,
+                      organization: Optional[str] = None,
+                      kms_key_id: str = "", key=None,
+                      actor: str = "system") -> Certificate:
+    """Issue a broadcast signaling-signer (CurrentCert/NextCert) leaf."""
+    return _issue_leaf(Profile.SIGNALING_SIGNER, "issue-broadcaster", "signing",
+                       name, bsids, tenant=tenant, common_name=common_name,
+                       days=days, organization=organization,
+                       kms_key_id=kms_key_id, key=key, actor=actor)
+
+
+def issue_cdt_signer(name: str, bsids: Iterable[int], *,
+                     tenant: Optional[Tenant] = None,
+                     common_name: Optional[str] = None, days: int = 365,
+                     organization: Optional[str] = None,
+                     kms_key_id: str = "", key=None,
+                     actor: str = "system") -> Certificate:
+    """Issue the distinct CertificationData (CDT `0x06`) signing key.
+
+    A/360 5.2.2.2 requires the CDT signing key to differ from the
+    CurrentCert/NextCert signaling keys; A/360 5.3.1.6 is the profile used.
+    """
+    return _issue_leaf(Profile.CDT_SIGNER, "issue-cdt-signer", "cdt-signer",
+                       name, bsids, tenant=tenant, common_name=common_name,
+                       days=days, organization=organization,
+                       kms_key_id=kms_key_id, key=key, actor=actor)
 
 
 def issue_ocsp_responder(*, tenant: Optional[Tenant] = None,
@@ -359,6 +411,166 @@ def issue_ocsp_responder(*, tenant: Optional[Tenant] = None,
               detail={"cn": common_name,
                       "tenant": tenant.slug if tenant is not None else None})
     return responder
+
+
+# --- signed bundle (publish) ----------------------------------------------
+
+def _latest_leaf(broadcaster: Broadcaster, profile: str) -> Optional[Certificate]:
+    return (Certificate.objects
+            .filter(broadcaster=broadcaster, profile=profile,
+                    status=CertStatus.GOOD)
+            .order_by("-created_at").first())
+
+
+def current_signer(broadcaster: Broadcaster) -> Certificate:
+    """The broadcaster's CurrentCert: its latest good signaling signer."""
+    cert = _latest_leaf(broadcaster, Profile.SIGNALING_SIGNER)
+    if cert is None:
+        raise ValueError(
+            f"broadcaster {broadcaster.name!r} has no signaling signer")
+    return cert
+
+
+def cdt_signer(broadcaster: Broadcaster) -> Certificate:
+    """The broadcaster's latest good CertificationData signer (A/360 5.2.2.2)."""
+    cert = _latest_leaf(broadcaster, Profile.CDT_SIGNER)
+    if cert is None:
+        raise ValueError(
+            f"broadcaster {broadcaster.name!r} has no CDT signer; "
+            "run issue-cdt-signer")
+    return cert
+
+
+def active_rollover(broadcaster: Broadcaster) -> Optional[RolloverPlan]:
+    """The broadcaster's open key-replacement window, if any."""
+    return (RolloverPlan.objects
+            .filter(broadcaster=broadcaster,
+                    state__in=[RolloverState.PLANNED, RolloverState.ACTIVE])
+            .order_by("-created_at").first())
+
+
+def _active_responder(tenant: Optional[Tenant]) -> OcspResponder:
+    """The responder to staple with: the tenant's, else the global one."""
+    active = OcspResponder.objects.filter(active=True)
+    if tenant is not None:
+        scoped = active.filter(certificate__tenant=tenant).order_by(
+            "-created_at").first()
+        if scoped is not None:
+            return scoped
+    responder = active.order_by("-created_at").first()
+    if responder is None:
+        raise ValueError("no active OCSP responder; run issue-ocsp-responder")
+    return responder
+
+
+def publish(broadcaster: Broadcaster, *, tables: Iterable = (),
+            signing_time: Optional[_dt.datetime] = None,
+            responder: Optional[OcspResponder] = None,
+            refresh: _dt.timedelta = OCSP_REFRESH_DEFAULT,
+            actor: str = "system") -> Tuple[PublishedSignaling, object, Optional[bytes]]:
+    """Assemble and sign a customer's bundle: CDT `0x06` (+ SMT `0x07`).
+
+    Builds the CertificationData from the ledger — the issuing/tenant CA chain,
+    the CurrentCert, the distinct CDT signer, and a fresh stapled OCSP per
+    certificate — and, when ``tables`` (``cdt.LlsTable`` items) is given, signs
+    those LLS tables into a SignedMultiTable with the CurrentCert (A/331 6.7).
+    An open rollover window adds the CertReplacement element and carries the
+    NextCert (A/360 5.2.2.2).  Files are written under
+    ``published/<broadcaster>/`` and a :class:`PublishedSignaling` snapshot is
+    recorded.  Returns ``(snapshot, cdt_table, smt_bytes)``.
+    """
+    signing_time = signing_time or timezone.now()
+    plan = active_rollover(broadcaster)
+    # During a rollover the CurrentCert is the plan's, not merely the newest.
+    current = plan.current if plan is not None else current_signer(broadcaster)
+    cdt_row = cdt_signer(broadcaster)
+    if current.parent is None:
+        raise ValueError(
+            f"signer {current.serial} has no issuing CA (parent)")
+    chain_cert = current.parent
+    responder = responder or _active_responder(broadcaster.tenant)
+
+    next_row = plan.next if plan is not None else None
+
+    ocsp_rows = [chain_cert, current, cdt_row]
+    if next_row is not None:
+        ocsp_rows.append(next_row)
+    ocsps = []
+    for row in ocsp_rows:
+        resp = generate_ocsp(row, responder=responder, this_update=signing_time,
+                             refresh=refresh)
+        ocsps.append(Path(resp.der_file).read_bytes())
+
+    table = pki_cdt.build(
+        chain=[_load_any(chain_cert).der()],
+        signing_cert=_load_any(current),
+        cdt_signer_cert=_load_any(cdt_row),
+        cdt_signer_key=_cert_signer(cdt_row),
+        ocsp_responses=ocsps,
+        ocsp_refresh=refresh,
+        next_cert=_load_any(next_row) if next_row is not None else None,
+        next_cert_from=plan.next_from if plan is not None else None,
+        current_cert_until=plan.current_until if plan is not None else None,
+        signing_time=signing_time)
+
+    tables = tuple(tables)
+    smt_bytes = None
+    if tables:
+        smt_bytes = pki_cdt.signed_multitable(
+            list(tables), _load_any(current), _cert_signer(current),
+            signing_time=signing_time)
+
+    out_dir = base_dir() / "published" / _safe(broadcaster.name)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cdt_path = out_dir / "cdt.xml.gz"
+    _write_bytes(cdt_path, table.gzip_bytes())
+    smt_path = ""
+    if smt_bytes is not None:
+        smt_path = str(out_dir / "signing.smt")
+        _write_bytes(Path(smt_path), smt_bytes)
+    with transaction.atomic():
+        published = PublishedSignaling.objects.create(
+            broadcaster=broadcaster, signing_time=signing_time, signer=current,
+            cdt_file=str(cdt_path), smt_file=smt_path,
+            note=f"cdt + {'smt' if smt_bytes is not None else 'no smt'}")
+        audit("publish", actor=actor, target=published,
+              detail={"name": broadcaster.name, "smt": smt_bytes is not None,
+                      "tenant": broadcaster.tenant.slug
+                      if broadcaster.tenant_id else None})
+    return published, table, smt_bytes
+
+
+# --- rollover (A/360 5.2.2.2 CertReplacement) ------------------------------
+
+def start_rollover(current: Certificate, next_: Certificate,
+                   next_from: _dt.datetime, current_until: _dt.datetime, *,
+                   actor: str = "system") -> RolloverPlan:
+    """Open a key-replacement window from ``current`` to ``next_``."""
+    plan = RolloverPlan(
+        broadcaster=current.broadcaster, current=current, next=next_,
+        next_from=next_from, current_until=current_until,
+        state=RolloverState.ACTIVE)
+    plan.full_clean()
+    with transaction.atomic():
+        plan.save()
+        audit("start-rollover", actor=actor, target=plan,
+              detail={"current": current.serial, "next": next_.serial,
+                      "next_from": next_from.isoformat(),
+                      "current_until": current_until.isoformat()})
+    return plan
+
+
+def complete_rollover(plan: RolloverPlan, *, actor: str = "system") -> RolloverPlan:
+    """Close the window: supersede the current cert and complete the plan."""
+    with transaction.atomic():
+        current = plan.current
+        current.status = CertStatus.SUPERSEDED
+        current.save(update_fields=["status", "updated_at"])
+        plan.state = RolloverState.COMPLETED
+        plan.save(update_fields=["state", "updated_at"])
+        audit("complete-rollover", actor=actor, target=plan,
+              detail={"current": current.serial, "next": plan.next.serial})
+    return plan
 
 
 # --- revocation ------------------------------------------------------------

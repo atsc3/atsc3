@@ -181,7 +181,8 @@ class CertificateAuthority:
                           password: Optional[bytes] = None, *,
                           tenant: Optional[str] = None,
                           key: "Optional[_x509.KeyLike]" = None,
-                          ca_key: "Optional[_x509.KeyLike]" = None) -> Certificate:
+                          ca_key: "Optional[_x509.KeyLike]" = None,
+                          label: str = "signing") -> Certificate:
         """Issue a signaling-signer certificate for one broadcaster.
 
         ``tenant`` selects the issuing CA: ``None`` uses the legacy default
@@ -189,7 +190,9 @@ class CertificateAuthority:
         ``tenants/<tenant>/``.  ``key`` is the signer's own signing key and
         ``ca_key`` the issuing CA's signer — both may be external
         :class:`~openatsc3_pki.signer.Signer` backends (e.g. KMS), in which case
-        no private key file is written for that key.
+        no private key file is written for that key.  ``label`` names the
+        key/certificate files, so a broadcaster can hold more than one leaf
+        (e.g. ``signing`` and ``cdt-signer``) without collision.
         """
         if tenant is None:
             issuing = self.load_issuing()
@@ -211,20 +214,22 @@ class CertificateAuthority:
         out = self.broadcaster_dir(name, tenant)
         os.makedirs(out, exist_ok=True)
         if wrote_key:
-            keys.write_private(os.path.join(out, "signing.key.pem"), key, password)
-        cert.to_pem_file(os.path.join(out, "signing.cert.pem"))
+            keys.write_private(os.path.join(out, f"{label}.key.pem"), key, password)
+        cert.to_pem_file(os.path.join(out, f"{label}.cert.pem"))
         return cert
 
     def load_broadcaster(self, name: str,
-                         tenant: Optional[str] = None) -> Certificate:
+                         tenant: Optional[str] = None,
+                         label: str = "signing") -> Certificate:
         from .x509 import load_pem
         with open(os.path.join(self.broadcaster_dir(name, tenant),
-                               "signing.cert.pem"), "rb") as fh:
+                               f"{label}.cert.pem"), "rb") as fh:
             return load_pem(fh.read())
 
     def load_broadcaster_key(self, name: str,
                              password: Optional[bytes] = None,
-                             tenant: Optional[str] = None) -> keys.KeyPair:
+                             tenant: Optional[str] = None,
+                             label: str = "signing") -> keys.KeyPair:
         return keys.load_private(
-            os.path.join(self.broadcaster_dir(name, tenant), "signing.key.pem"),
+            os.path.join(self.broadcaster_dir(name, tenant), f"{label}.key.pem"),
             password)
