@@ -16,8 +16,8 @@ created by a *ceremony* (request online, sign air-gapped, import online).
 .. note::
 
    This runbook is version-controlled (reStructuredText, built by ``make docs``).
-   The design *record* lives in the project wiki (``atsc3certs/wiki``), which is
-   not tracked: see the mechanism page listed under **See also**.
+   The design *record* lives in the project wiki, which is not tracked: see the
+   mechanism page listed under **See also**.
 
 .. contents:: On this page
    :local:
@@ -310,5 +310,5 @@ See also
 --------
 
 * :doc:`pki-transmission` — the library-level CA and signed-frame round trip.
-* The project wiki (``atsc3certs/wiki``): the offline-root-ceremony mechanism,
-  the root-compromise threat model, and the root-custody decision.
+* The project wiki: the offline-root-ceremony mechanism, the root-compromise
+  threat model, and the root-custody decision.
