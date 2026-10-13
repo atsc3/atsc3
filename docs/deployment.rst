@@ -24,7 +24,7 @@ ECR, IAM) is Terraform, applied from ``atsc3certs``.  This repository holds:
      openatsc3-ca/
        Dockerfile                     # build context is the repo root
        deploy/entrypoint.sh           # export the PEM tree, then gunicorn
-     .github/workflows/deploy.yml     # build → ECR → migrate task → roll service
+     .github/workflows/build.yml      # build the image (no AWS, no deploy)
 
 The container installs the local ``openatsc3-pki`` and ``openatsc3-ca[kms,
 stripe,aws,prod]`` from the checkout (the context must be the monorepo root),
@@ -35,18 +35,21 @@ container is stateless.
 Deploy
 ------
 
-The full, authoritative procedure (bootstrap, environment apply, image, first-run
-setup, KMS keys, HTTPS/Stripe) is in the other repository:
+The full, authoritative procedure (bootstrap, environment apply, image,
+first-run setup, KMS keys, HTTPS/Stripe) is in the other repository:
 ``../atsc3certs/docs/deployment.rst``.
 
-In short:
+This repository's CI **only builds** the image: ``build.yml`` builds the
+Dockerfile on ``openatsc3-ca``/``openatsc3-pki`` changes and runs a smoke check.
+It uses **no AWS** (no OIDC, no registry push, no deployment).  Publishing the
+image and rolling the service are done by hand:
 
 #. Apply the Terraform stack from ``../atsc3certs/deploy/terraform`` (bootstrap,
    then ``environments/dev``) to create ECR, RDS, ECS, the ALB, and the secrets.
-#. Push to ``main`` here — ``deploy.yml`` builds the image, runs the **migrate**
-   one-off ECS task, and rolls the service (OIDC, no static keys).
-#. Run the one-time app setup (``migrate``, ``createsuperuser``, ``import-signed
-   --profile root``, the responder ceremony).
+#. Build and push the image to ECR, then run the **migrate** one-off ECS task
+   and update the service (commands in the ``atsc3certs`` deployment page).
+#. Run the one-time app setup (``migrate``, ``createsuperuser``,
+   ``import-signed --profile root``, the responder ceremony).
 
 The ``tf-plan.yml`` (format/validate/plan on PRs) lives with the Terraform in
 ``atsc3certs``; apply is manual.

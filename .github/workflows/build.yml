@@ -1,0 +1,47 @@
+name: Build container (openatsc3-ca)
+
+# Builds the openatsc3-ca image to verify the Dockerfile.  This workflow touches
+# **no AWS** — no registry push and no deployment (no OIDC, no ECR, no ECS).
+# Publishing the image and rolling the service are done separately, by hand.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "openatsc3-ca/**"
+      - "openatsc3-pki/**"
+      - ".github/workflows/build.yml"
+  pull_request:
+    paths:
+      - "openatsc3-ca/**"
+      - "openatsc3-pki/**"
+      - ".github/workflows/build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # The context must be the monorepo root: openatsc3-ca depends on the local
+      # (unpublished) openatsc3-pki.
+      - name: Build the image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: openatsc3-ca/Dockerfile
+          push: false
+          load: true
+          tags: openatsc3-ca:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke check
+        run: |
+          docker run --rm openatsc3-ca:ci \
+            python -c "import django, gunicorn, openatsc3_ca; print('import ok')"
