@@ -50,6 +50,8 @@ Start here
   the frame budget, and what CPU/host is needed to keep up.
 * :doc:`pki-transmission` — create a certificate authority, issue a
   broadcaster certificate, transmit a signed frame, and receive and verify it.
+* :doc:`ca-operator-runbook` — operate the CA service with an air-gapped 3-of-5
+  quorum root: root generation, tenant-CA/responder ceremonies, DR.
 
 Reference
 ---------
@@ -72,6 +74,7 @@ Reference
    sdrplay
    live-streaming
    pki-transmission
+   ca-operator-runbook
    python-api
 
 Indices and tables

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from openatsc3_ca.catalog import services
-from openatsc3_ca.catalog.models import Broadcaster, Certificate
+from openatsc3_ca.catalog.models import Broadcaster, Certificate, Tenant
 
 pytestmark = pytest.mark.django_db
 
@@ -91,3 +91,26 @@ def test_import_tenant_tree_and_responders(tmp_path, ca_base):
     responders = OcspResponder.objects.filter(active=True)
     assert responders.filter(certificate__parent__profile="root").count() == 1
     assert responders.filter(certificate__tenant__slug="acme").count() == 1
+
+
+def test_import_offbox_root_anchor_enables_the_ceremony(ca_base):
+    """Register a root generated off-box, then run the tenant-CA ceremony."""
+    from pathlib import Path
+
+    from openatsc3_pki import ca as pki_ca, ceremony
+
+    tree = pki_ca.CertificateAuthority(ca_base)
+    root = tree.init_root(common_name="Air-gapped Root")
+
+    anchor = services.import_signed_certificate(root.pem(), "root")
+    assert anchor.profile == "root"
+    assert anchor.parent is None
+    assert (Path(ca_base) / "root" / "root.cert.pem").exists()
+
+    # The online side can now build a request from the public anchor alone...
+    tenant = Tenant.objects.create(name="Acme", slug="acme")
+    request = services.request_tenant_ca(tenant)
+    # ...the air-gapped side signs it with the offline root key.
+    signed = ceremony.sign_request(request, tree.load_root_key())
+    tca = services.import_signed_certificate(signed.der(), "tenant-ca", tenant=tenant)
+    assert tca.parent == anchor

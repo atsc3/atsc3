@@ -25,6 +25,7 @@ from django.db import transaction
 from django.utils import timezone
 from openatsc3_pki import ca as pki_ca
 from openatsc3_pki import cdt as pki_cdt
+from openatsc3_pki import ceremony as pki_ceremony
 from openatsc3_pki import crl as pki_crl
 from openatsc3_pki import keys as pki_keys
 from openatsc3_pki import ocsp as pki_ocsp
@@ -192,6 +193,16 @@ def _authority() -> pki_ca.CertificateAuthority:
     return pki_ca.CertificateAuthority(str(base_dir()))
 
 
+def root_is_offline() -> bool:
+    """True when the root key is not available online (air-gapped quorum).
+
+    Set ``OPENATSC3_CA_ROOT_OFFLINE`` (or run an air-gapped ceremony); online
+    issuance that needs the root then fails with a pointer to the ceremony
+    instead of reading a local root key.
+    """
+    return bool(getattr(settings, "OPENATSC3_CA_ROOT_OFFLINE", False))
+
+
 def _signer_for(key=None, kms_key_id: str = ""):
     """An external signing backend: an explicit signer, or a KMS key id.
 
@@ -288,6 +299,11 @@ def issue_tenant_ca(tenant: Tenant, *, common_name: Optional[str] = None,
     ``key``/``kms_key_id`` inject an external signer (KMS); otherwise a local
     P-384 key is generated and written under ``tenants/<slug>/``.
     """
+    if root_is_offline():
+        raise ValueError(
+            "the root key is offline; create this tenant CA by ceremony: "
+            "`manage.py request-tenant-ca` -> `openatsc3-pki sign-request` -> "
+            "`manage.py import-signed --profile tenant-ca`")
     authority = _authority()
     signer = _signer_for(key, kms_key_id)
     cert = authority.issue_tenant_ca(tenant.slug, common_name=common_name,
@@ -427,6 +443,11 @@ def issue_root_responder(*, common_name: str = "OpenATSC3 Root OCSP Responder",
     It is kept out of the cert-minting path, so its compromise can suppress or
     deny revocation but cannot mint certificates.
     """
+    if root_is_offline():
+        raise ValueError(
+            "the root key is offline; create this responder by ceremony: "
+            "`manage.py request-root-responder` -> `openatsc3-pki sign-request` -> "
+            "`manage.py import-signed --profile ocsp-responder --responder`")
     authority = _authority()
     root = authority.load_root()
     root_key = authority.load_root_key()
@@ -457,6 +478,123 @@ def issue_root_responder(*, common_name: str = "OpenATSC3 Root OCSP Responder",
         audit("issue-root-responder", actor=actor, target=responder,
               detail={"cn": common_name})
     return responder
+
+
+# --- offline-root ceremony (request -> air-gapped sign -> import) ----------
+
+def _local_key_path(profile: str, tenant: Optional[Tenant]) -> str:
+    """The on-disk key path for a certificate profile ('' when KMS/unknown)."""
+    authority = _authority()
+    if profile == Profile.TENANT_CA and tenant is not None:
+        return authority.tenant_key_path(tenant.slug)
+    if profile == Profile.OCSP_RESPONDER:
+        if tenant is not None:
+            return str(Path(authority.tenant_dir(tenant.slug)) / "ocsp-responder.key.pem")
+        return str(base_dir() / "root" / "ocsp-responder.key.pem")
+    if profile in (Profile.SIGNALING_SIGNER, Profile.CDT_SIGNER):
+        # A leaf's key path depends on the caller; the online side records it.
+        return ""
+    return ""
+
+
+def _local_cert_path(profile: str, tenant: Optional[Tenant]) -> str:
+    """The conventional on-disk cert path for a profile ('' when not applicable)."""
+    authority = _authority()
+    if profile == Profile.ROOT:
+        return str(base_dir() / "root" / "root.cert.pem")
+    if profile == Profile.TENANT_CA and tenant is not None:
+        return authority.tenant_cert_path(tenant.slug)
+    if profile == Profile.OCSP_RESPONDER:
+        if tenant is not None:
+            return str(Path(authority.tenant_dir(tenant.slug)) / "ocsp-responder.cert.pem")
+        return str(base_dir() / "root" / "ocsp-responder.cert.pem")
+    return ""
+
+
+def request_tenant_ca(tenant: Tenant, *, common_name: Optional[str] = None,
+                      days: int = 3650, kms_key_id: str = "", key=None,
+                      actor: str = "system") -> bytes:
+    """Build a tenant-CA ceremony request (placeholder DER) for the offline root.
+
+    The tenant CA's key is created here if not supplied (a local file, or a KMS
+    key id); only its public half goes into the request.  The root key is never
+    needed online.
+    """
+    authority = _authority()
+    root = authority.load_root()
+    signer = _signer_for(key, kms_key_id)
+    if signer is None:
+        signer = pki_keys.generate(pki_keys.CA_CURVE)
+        pki_keys.write_private(authority.tenant_key_path(tenant.slug), signer)
+    public = pki_ceremony.PublicKey.from_signer(signer)
+    subject = SubjectInfo(
+        common_name=common_name or f"{tenant.slug} Intermediate CA",
+        organizational_unit="ATSC Trust Authority",
+        organization=_name_attr(root.cert.subject, NameOID.ORGANIZATION_NAME))
+    request = pki_ceremony.ca_request(subject, public, root, days=days,
+                                      curve=pki_keys.ROOT_CURVE)
+    audit("request-tenant-ca", actor=actor, target=tenant,
+          detail={"tenant": tenant.slug, "kms": bool(kms_key_id)})
+    return request
+
+
+def request_root_responder(*, common_name: str = "OpenATSC3 Root OCSP Responder",
+                           days: int = 365, kms_key_id: str = "", key=None,
+                           actor: str = "system") -> bytes:
+    """Build a root-delegated OCSP-responder request for the offline root."""
+    authority = _authority()
+    root = authority.load_root()
+    signer = _signer_for(key, kms_key_id)
+    key_path = base_dir() / "root" / "ocsp-responder.key.pem"
+    if signer is None:
+        signer = pki_keys.generate(pki_keys.SIGNER_CURVE)
+        pki_keys.write_private(str(key_path), signer)
+    public = pki_ceremony.PublicKey.from_signer(signer)
+    subject = SubjectInfo(
+        common_name=common_name,
+        organizational_unit="ATSC OCSP Responder",
+        organization=_name_attr(root.cert.subject, NameOID.ORGANIZATION_NAME))
+    request = pki_ceremony.responder_request(subject, public, root, days=days,
+                                             curve=pki_keys.ROOT_CURVE)
+    audit("request-root-responder", actor=actor,
+          detail={"cn": common_name, "kms": bool(kms_key_id)})
+    return request
+
+
+def import_signed_certificate(data: bytes, profile: str, *,
+                              tenant: Optional[Tenant] = None,
+                              broadcaster: Optional[Broadcaster] = None,
+                              kms_key_id: str = "", key_path: str = "",
+                              make_responder: bool = False,
+                              actor: str = "system") -> Certificate:
+    """Record a certificate signed offline by the root into the ledger.
+
+    ``data`` is the DER/PEM returned from the air-gapped signing step.  The
+    ``parent`` is linked from the certificate's AuthorityKeyIdentifier, so the
+    ledger chain (root -> tenant CA -> leaves) is reconstructed automatically.
+    """
+    cert = (pki_x509.load_pem(data) if data.lstrip().startswith(b"-----")
+            else pki_x509.load_der(data))
+    if not key_path:
+        key_path = "" if kms_key_id else _local_key_path(profile, tenant)
+    key_sha = sha256_file(key_path) if key_path and os.path.exists(key_path) else ""
+    with transaction.atomic():
+        result = record_certificate(cert, profile, tenant=tenant,
+                                    broadcaster=broadcaster, key_path=key_path,
+                                    kms_key_id=kms_key_id)
+        out = _local_cert_path(profile, tenant)
+        if out:
+            _write_cert_pem(result.certificate, Path(out))
+        if make_responder and not OcspResponder.objects.filter(
+                certificate=result.certificate, active=True).exists():
+            OcspResponder.objects.create(
+                common_name=result.certificate.common_name,
+                certificate=result.certificate, key_path=key_path,
+                key_sha256=key_sha, active=True)
+        audit("import-signed", actor=actor, target=result.certificate,
+              detail={"profile": profile,
+                      "tenant": tenant.slug if tenant is not None else None})
+    return result.certificate
 
 
 # --- signed bundle (publish) ----------------------------------------------
@@ -817,6 +955,11 @@ def fulfill_order(order: Order, *, deliverer=None, actor: str = "system",
 
     tenant = _ensure_order_tenant(order)
     if _tenant_ca_cert(tenant) is None:
+        if root_is_offline():
+            raise ValueError(
+                f"tenant {tenant.slug!r} has no tenant CA and the root is "
+                "offline; provision it by ceremony (request-tenant-ca + "
+                "import-signed --profile tenant-ca) before approving this order")
         issue_tenant_ca(tenant, actor=actor)
     name = order.broadcaster_name or order.organization or tenant.slug
     bsids = tuple(int(b) for b in order.bsids)
@@ -834,6 +977,11 @@ def fulfill_order(order: Order, *, deliverer=None, actor: str = "system",
         issue_cdt_signer(name, bsids, tenant=tenant, actor=actor)
     if not OcspResponder.objects.filter(
             active=True, certificate__parent__profile=Profile.ROOT).exists():
+        if root_is_offline():
+            raise ValueError(
+                "no root-delegated OCSP responder and the root is offline; issue "
+                "one by ceremony (request-root-responder + import-signed "
+                "--profile ocsp-responder --responder) before approving")
         issue_root_responder(actor=actor)
     if not OcspResponder.objects.filter(active=True,
                                         certificate__tenant=tenant).exists():

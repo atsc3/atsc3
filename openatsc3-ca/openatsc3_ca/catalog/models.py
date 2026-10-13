@@ -35,6 +35,8 @@ class Tenant(models.Model):
     active = models.BooleanField(default=True)
     #: Bearer token for the customer-facing API (blank = API access disabled).
     api_token = models.CharField(max_length=64, blank=True, db_index=True)
+    #: Optional expiry for ``api_token`` (null = no expiry).
+    api_token_expires_at = models.DateTimeField(null=True, blank=True)
     notes = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

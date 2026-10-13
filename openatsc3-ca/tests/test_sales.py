@@ -188,3 +188,39 @@ def test_payment_failure_cancels_a_pending_order(ca):
 
     result.refresh_from_db()
     assert result.status == "cancelled"
+
+
+def test_fulfill_fails_clearly_when_root_is_offline(ca, settings, tmp_path):
+    order = _order()
+    services.mark_order_paid(order)
+    settings.OPENATSC3_CA_ROOT_OFFLINE = True
+
+    with pytest.raises(ValueError, match="root is offline"):
+        services.fulfill_order(order, deliverer=LocalDeliverer(tmp_path / "d"))
+
+
+def test_issue_tenant_ca_blocked_when_root_is_offline(ca, settings):
+    from openatsc3_ca.catalog.models import Tenant
+
+    settings.OPENATSC3_CA_ROOT_OFFLINE = True
+    tenant = Tenant.objects.create(name="Acme", slug="acme")
+    with pytest.raises(ValueError, match="root key is offline"):
+        services.issue_tenant_ca(tenant)
+
+
+def test_fulfill_proceeds_with_preprovisioned_ca(ca, settings, tmp_path):
+    """The runbook flow: provision the tenant CA by ceremony, then auto-fulfill."""
+    from openatsc3_pki import ceremony, keys
+
+    order = _order()
+    services.mark_order_paid(order)
+    tenant = services._ensure_order_tenant(order)
+    request = services.request_tenant_ca(tenant)
+    signed = ceremony.sign_request(request, keys.load_private(ca["root"].key_path))
+    services.import_signed_certificate(signed.der(), "tenant-ca", tenant=tenant)
+
+    settings.OPENATSC3_CA_ROOT_OFFLINE = True
+    services.fulfill_order(order, deliverer=LocalDeliverer(tmp_path / "d"))
+
+    order.refresh_from_db()
+    assert order.status == "fulfilled"

@@ -138,6 +138,11 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 OPENATSC3_CA_BASE_DIR = os.environ.get(
     "OPENATSC3_CA_BASE_DIR", str(BASE_DIR / "ca-tree"))
 
+#: When the root key is held offline (air-gapped quorum), online issuance that
+#: needs the root fails fast and points at the ceremony instead of touching a
+#: local root key.  See the operator runbook (docs/ca-operator-runbook.rst).
+OPENATSC3_CA_ROOT_OFFLINE = _flag("OPENATSC3_CA_ROOT_OFFLINE", False)
+
 #: Where fulfilled bundles are delivered when no S3 bucket is configured.
 OPENATSC3_CA_DELIVERY_DIR = os.environ.get(
     "OPENATSC3_CA_DELIVERY_DIR", str(BASE_DIR / "deliveries"))
@@ -155,3 +160,20 @@ OPENATSC3_CA_STRIPE_WEBHOOK_SECRET = os.environ.get(
 #: Absolute base URL used for Stripe Checkout success/cancel redirects.
 OPENATSC3_CA_PUBLIC_BASE_URL = os.environ.get(
     "OPENATSC3_CA_PUBLIC_BASE_URL", "http://localhost:8000")
+
+#: Customer API: per-tenant request budget per minute (0 disables the limit).
+OPENATSC3_CA_API_RATE_PER_MINUTE = int(
+    os.environ.get("OPENATSC3_CA_API_RATE_PER_MINUTE", "60"))
+#: Customer API: maximum request body size in bytes.
+OPENATSC3_CA_API_MAX_BYTES = int(
+    os.environ.get("OPENATSC3_CA_API_MAX_BYTES", str(1 << 20)))
+
+#: Cache backend for the API rate limiter (locmem by default).
+CACHES = {
+    "default": {
+        "BACKEND": os.environ.get(
+            "OPENATSC3_CA_CACHE_BACKEND",
+            "django.core.cache.backends.locmem.LocMemCache"),
+        "LOCATION": os.environ.get("OPENATSC3_CA_CACHE_LOCATION", "openatsc3-ca"),
+    },
+}

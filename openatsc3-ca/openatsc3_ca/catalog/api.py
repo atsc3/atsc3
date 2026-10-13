@@ -2,7 +2,8 @@
 
 Deliberately plain Django (no DRF): v1 stays dependency-light and the webhook is
 the only other non-admin surface.  A tenant authenticates with its ``api_token``
-via ``Authorization: Token <t>`` (or ``X-API-Token``).
+via ``Authorization: Token <t>`` (or ``X-API-Token``); tokens may expire
+(``Tenant.api_token_expires_at``).
 
 * ``GET  /api/v1/tenant/``        — the tenant and its broadcasters.
 * ``GET  /api/v1/certificates/``  — the tenant's certificates (read-only).
@@ -11,6 +12,8 @@ via ``Authorization: Token <t>`` (or ``X-API-Token``).
 The SMT endpoint is the product's "we sign your tables" boundary: the customer
 uploads the LLS table bodies, and the service returns the signed ``0x07``
 SignedMultiTable plus its CertificationData ``0x06`` (A/331 6.7, A/360 5.2.2.2).
+Requests are size-capped and rate-limited per tenant; every signing call is
+audited.
 """
 
 from __future__ import annotations
@@ -19,7 +22,10 @@ import base64
 import binascii
 import json
 
+from django.conf import settings
+from django.core.cache import cache
 from django.http import JsonResponse
+from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
 from openatsc3_pki import cdt as pki_cdt
@@ -37,16 +43,49 @@ def _tenant_from_request(request):
     return Tenant.objects.filter(api_token=token, active=True).first()
 
 
-def _unauthorized():
-    return JsonResponse({"error": "missing or invalid API token"}, status=401)
+def _rate_limit_exceeded(tenant: Tenant) -> bool:
+    """Fixed-window per-tenant request budget (``..._API_RATE_PER_MINUTE``)."""
+    limit = getattr(settings, "OPENATSC3_CA_API_RATE_PER_MINUTE", 60)
+    if limit <= 0:
+        return False
+    key = f"openatsc3ca:api-rate:{tenant.pk}"
+    try:
+        count = cache.incr(key)
+    except ValueError:
+        cache.add(key, 1, timeout=60)
+        count = 1
+    return count > limit
+
+
+def _authorize(request):
+    """Return ``(tenant, None)`` or ``(None, error_response)``."""
+    tenant = _tenant_from_request(request)
+    if tenant is None:
+        return None, JsonResponse({"error": "missing or invalid API token"},
+                                  status=401)
+    if (tenant.api_token_expires_at is not None
+            and tenant.api_token_expires_at <= timezone.now()):
+        return None, JsonResponse({"error": "API token expired"}, status=401)
+    if _rate_limit_exceeded(tenant):
+        return None, JsonResponse({"error": "rate limit exceeded"}, status=429)
+    return tenant, None
+
+
+def _too_large(request) -> bool:
+    limit = getattr(settings, "OPENATSC3_CA_API_MAX_BYTES", 1 << 20)
+    length = request.META.get("CONTENT_LENGTH") or 0
+    try:
+        return int(length) > limit
+    except (TypeError, ValueError):
+        return False
 
 
 @require_GET
 def tenant_info(request):
     """The authenticated tenant and its broadcaster names."""
-    tenant = _tenant_from_request(request)
-    if tenant is None:
-        return _unauthorized()
+    tenant, error = _authorize(request)
+    if error is not None:
+        return error
     broadcasters = sorted(
         Broadcaster.objects.filter(tenant=tenant).values_list("name", flat=True))
     return JsonResponse({
@@ -60,9 +99,9 @@ def tenant_info(request):
 @require_GET
 def certificates(request):
     """The authenticated tenant's certificates (read-only)."""
-    tenant = _tenant_from_request(request)
-    if tenant is None:
-        return _unauthorized()
+    tenant, error = _authorize(request)
+    if error is not None:
+        return error
     rows = (Certificate.objects.filter(tenant=tenant)
             .select_related("broadcaster").order_by("-created_at"))
     return JsonResponse({"certificates": [_cert_json(c) for c in rows]})
@@ -83,9 +122,11 @@ def _cert_json(cert: Certificate) -> dict:
 @require_POST
 def upload_smt(request):
     """Sign the customer's LLS tables and return the CDT ``0x06`` + SMT ``0x07``."""
-    tenant = _tenant_from_request(request)
-    if tenant is None:
-        return _unauthorized()
+    tenant, error = _authorize(request)
+    if error is not None:
+        return error
+    if _too_large(request):
+        return JsonResponse({"error": "request body too large"}, status=413)
     try:
         body = json.loads(request.body or b"{}")
     except json.JSONDecodeError as exc:
@@ -109,6 +150,8 @@ def upload_smt(request):
             broadcaster, tables=tables, actor=f"api:{tenant.slug}")
     except ValueError as exc:
         return JsonResponse({"error": str(exc)}, status=400)
+    services.audit("api-smt", actor=f"api:{tenant.slug}", target=broadcaster,
+                   detail={"tables": len(tables)})
     return JsonResponse({
         "cdt_b64": base64.b64encode(cdt_table.gzip_bytes()).decode("ascii"),
         "smt_b64": base64.b64encode(smt).decode("ascii"),

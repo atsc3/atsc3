@@ -81,6 +81,8 @@ python manage.py create-checkout --id <order>     # Stripe Checkout Session
 python manage.py approve-order --id <order>       # issue tenant CA + deliver
 python manage.py refund-order --id <order>        # refund + revoke the tenant CA
 python manage.py set-api-token --tenant acme      # customer API bearer token
+python manage.py request-tenant-ca --tenant acme --out acme.req.der   # offline-root ceremony
+python manage.py import-signed --cert acme.pem --profile tenant-ca --tenant acme
 python manage.py ocsp --serial <serial>
 python manage.py generate-crl --serial <ca-serial>   # CRL of the CA's revoked children
 python manage.py revoke --serial <serial>   # persistent; OCSP now says revoked
@@ -125,7 +127,8 @@ tree), so two customers may use the same station name.
 ## Customer API (v1)
 
 A small token-authenticated JSON API (plain Django, no DRF). The tenant's
-`api_token` (`set-api-token`) is sent as `Authorization: Token <t>`:
+`api_token` (`set-api-token`, optional `--days N` expiry) is sent as
+`Authorization: Token <t>`:
 
 - `GET /api/v1/tenant/` — the tenant and its broadcaster names.
 - `GET /api/v1/certificates/` — the tenant's certificates (read-only).
@@ -133,6 +136,55 @@ A small token-authenticated JSON API (plain Django, no DRF). The tenant's
   SMT `0x07` as base64. Body:
   `{"broadcaster": "ACME-TV", "tables": [{"table_id": 1, "version": 13,
   "payload_b64": "..."}]}`.
+
+Requests are rate-limited per tenant (`OPENATSC3_CA_API_RATE_PER_MINUTE`,
+default 60) and size-capped (`OPENATSC3_CA_API_MAX_BYTES`, default 1 MiB);
+expired tokens get `401`; each signing call is audited (`api-smt`).
+
+## Offline-root ceremony
+
+The root key never touches the online host. Three steps (`pki` = `openatsc3-pki`,
+`ca` = `manage.py`):
+
+```bash
+# 1. online: create the subject key + a signing request (public material only)
+python manage.py request-tenant-ca --tenant acme --out acme.req.der
+# 2. air-gapped: sign the request's TBS with the root key
+openatsc3-pki sign-request --request acme.req.der --key root/root.key.pem --out acme.pem
+# 3. online: record the result (chain links via the certificate's AKI)
+python manage.py import-signed --cert acme.pem --profile tenant-ca --tenant acme
+```
+
+`request-root-responder` + `import-signed --profile ocsp-responder --responder`
+does the same for the root-delegated revocation responder. The mechanism
+(`openatsc3_pki.ceremony`) builds a placeholder certificate online (real issuer
+name + AKI, real subject key, throwaway signature) and the air-gapped step signs
+its `TBSCertificate`; the result is a normal certificate. Online subject keys may
+be KMS (`--kms-key-id`).
+
+**Quorum custody (3-of-5).** The root key is split with Shamir secret sharing;
+signing requires a threshold of shares, held by separate custodians/media:
+
+```bash
+# at root generation, on the air-gapped host (k-of-n)
+openatsc3-pki quorum-split --key root/root.key.pem \
+    --threshold 3 --shares 5 --out-dir custody/shares
+# each ceremony: any 3 custodians present their share
+openatsc3-pki sign-request --request acme.req.der \
+    --shares custody/shares/share-1 custody/shares/share-3 custody/shares/share-5 \
+    --out acme.pem
+```
+
+`openatsc3-pki quorum-combine --shares ... --out root.key.pem` reconstructs the
+key for recovery/HSM import. Shares are written `0600`; a self-check confirms a
+quorum reconstructs before the original key media is destroyed.
+
+Once the root is generated off-box, register only its public anchor:
+`python manage.py import-signed --cert root.cert.pem --profile root`. On an
+air-gapped deployment set **`OPENATSC3_CA_ROOT_OFFLINE=1`** so the online app
+refuses to sign with a local root and points at the ceremony. The full operator
+procedure (roles, witnesses, DR, root rotation) is the versioned runbook
+`docs/ca-operator-runbook.rst` in the monorepo docs.
 
 ## Signed bundle (`publish`)
 

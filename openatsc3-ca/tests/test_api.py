@@ -81,3 +81,51 @@ def test_smt_upload_unknown_broadcaster(ca):
     resp = client.post("/api/v1/smt/", data=json.dumps(body),
                        content_type="application/json", **_auth("tok-acme"))
     assert resp.status_code == 404
+
+
+def test_api_token_expiry(ca):
+    import datetime as _dt
+
+    from django.utils import timezone
+
+    tenant = _tenant_with_bundle()
+    tenant.api_token_expires_at = timezone.now() - _dt.timedelta(seconds=1)
+    tenant.save(update_fields=["api_token_expires_at"])
+
+    client = Client()
+    assert client.get("/api/v1/tenant/", **_auth("tok-acme")).status_code == 401
+
+
+def test_api_rate_limit(ca, settings):
+    from django.core.cache import cache
+
+    cache.clear()
+    settings.OPENATSC3_CA_API_RATE_PER_MINUTE = 2
+    _tenant_with_bundle()
+    client = Client()
+    assert client.get("/api/v1/tenant/", **_auth("tok-acme")).status_code == 200
+    assert client.get("/api/v1/tenant/", **_auth("tok-acme")).status_code == 200
+    assert client.get("/api/v1/tenant/", **_auth("tok-acme")).status_code == 429
+
+
+def test_smt_upload_size_cap(ca, settings):
+    settings.OPENATSC3_CA_API_MAX_BYTES = 8
+    _tenant_with_bundle()
+    client = Client()
+    resp = client.post("/api/v1/smt/", data=json.dumps({"broadcaster": "ACME-TV"}),
+                       content_type="application/json", **_auth("tok-acme"))
+    assert resp.status_code == 413
+
+
+def test_smt_upload_is_audited(ca):
+    from openatsc3_ca.catalog.models import AuditEvent
+
+    _tenant_with_bundle()
+    client = Client()
+    body = {"broadcaster": "ACME-TV",
+            "tables": [{"table_id": 1, "version": 13,
+                        "payload_b64": base64.b64encode(b"x").decode()}]}
+    client.post("/api/v1/smt/", data=json.dumps(body),
+                content_type="application/json", **_auth("tok-acme"))
+    assert AuditEvent.objects.filter(action="api-smt",
+                                     actor="api:acme").exists()

@@ -71,6 +71,14 @@ def load_private(path: str, password: Optional[bytes] = None) -> KeyPair:
     return KeyPair(key)
 
 
+def load_private_bytes(data: bytes, password: Optional[bytes] = None) -> KeyPair:
+    """Load an ECDSA private key from PKCS#8 PEM bytes (in memory)."""
+    key = serialization.load_pem_private_key(data, password=password)
+    if not isinstance(key, ec.EllipticCurvePrivateKey):
+        raise ValueError("not an ECDSA private key")
+    return KeyPair(key)
+
+
 def public_bytes(key: KeyPair) -> bytes:
     """Serialize the public key to SubjectPublicKeyInfo PEM."""
     return key.public.public_bytes(
