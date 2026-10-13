@@ -151,6 +151,24 @@ def test_verify_streams_wrong_root_fails(wired, tmp_path):
     assert "chain" in report.reason or "root" in report.reason
 
 
+def test_verify_streams_accepts_trust_store(wired):
+    store = security.TrustStore([wired["ca"].load_root()])
+    report = security.verify_streams(_streams(wired["datagrams"]), store,
+                                     now=wired["now"])
+    assert report.ok, security.describe(report)
+
+
+def test_verify_streams_trust_store_overlap(wired, tmp_path):
+    # An overlap window holds an extra (unrelated) anchor; verification still
+    # finds the chain to the trusted root.
+    extra = ca.CertificateAuthority(str(tmp_path / "extra"))
+    extra.init_root(common_name="Unrelated Root CA")
+    store = security.TrustStore([extra.load_root(), wired["ca"].load_root()])
+    report = security.verify_streams(_streams(wired["datagrams"]), store,
+                                     now=wired["now"])
+    assert report.ok, security.describe(report)
+
+
 def test_verify_streams_tampered_smt_fails(wired):
     # Flip a byte inside the signed extent of the SignedMultiTable.
     body = bytearray(wired["smt"])

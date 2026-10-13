@@ -49,6 +49,22 @@ def test_duplicate_and_zero_shares_rejected():
         quorum.combine([b"\x00" + shares[0][1:], shares[1]])
 
 
+def test_reshare_produces_fresh_shares_for_the_same_secret():
+    secret = b"the root private key bytes"
+    old = quorum.split(secret, 3, 5)
+    new = quorum.reshare(old[:3], 3, 5)
+    assert len(new) == 5
+    assert new != old
+    assert quorum.combine(new[:3]) == secret
+    assert quorum.combine([new[0], new[2], new[4]]) == secret
+
+
+def test_reshare_validates_parameters():
+    old = quorum.split(b"secret", 3, 5)
+    with pytest.raises(ValueError):
+        quorum.reshare(old[:3], 5, 3)
+
+
 def test_validation():
     with pytest.raises(ValueError):
         quorum.split(b"", 3, 5)

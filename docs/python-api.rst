@@ -57,3 +57,27 @@ Bounded live receive
 
 .. autoclass:: atsc3lib.live.LiveStats
    :members:
+
+Security (receiver trust)
+-------------------------
+
+The receiver-side security gate verifies signed signaling against a trust store
+through a pluggable provider (A/360 5.2.2.6).  See
+:doc:`pki-transmission` for the walkthrough and
+:doc:`ca-operator-runbook` for the certificate authority.
+
+.. autofunction:: atsc3lib.security.verify_streams
+
+.. autofunction:: atsc3lib.security.load_trust_roots
+
+.. autofunction:: atsc3lib.security.load_trust_store
+
+.. autoclass:: atsc3lib.security.TrustStore
+   :members:
+
+.. autoclass:: atsc3lib.security.SecurityReport
+   :members:
+
+.. autoclass:: atsc3lib.security.TableVerdict
+   :members:
+

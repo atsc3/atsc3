@@ -116,3 +116,17 @@ def combine(shares: Sequence[bytes]) -> bytes:
         for k in range(length):
             secret[k] ^= _mul(ys[i][k], factor)
     return bytes(secret)
+
+
+def reshare(shares: Sequence[bytes], threshold: int, new_shares: int, *,
+            randbytes: Callable[[int], bytes] = secrets.token_bytes) -> List[bytes]:
+    """Re-split the secret into fresh shares without writing the whole key.
+
+    A custodian change (Ceremony E): ``threshold`` custodians present their
+    shares, the key is reconstructed *in memory only*, immediately re-split into
+    ``new_shares`` fresh shares, and never serialized.  Returns the new shares in
+    evaluation-point order, same as :func:`split`.
+    """
+    secret = combine(shares)
+    return split(secret, threshold, new_shares, randbytes=randbytes)
+

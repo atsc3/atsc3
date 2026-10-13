@@ -92,7 +92,15 @@ class _Chain:
 
 def _find_chain(leaf: Certificate, roots: Sequence[Certificate],
                 pool: Sequence[Certificate]) -> Optional[_Chain]:
-    """Build a path from ``leaf`` to a trusted root, if one exists."""
+    """Build a path from ``leaf`` to a trusted root, if one exists.
+
+    A chain terminates only at a certificate that **is** one of the trusted
+    anchors (DER-identical), not merely one that shares the anchor's subject DN.
+    That distinction matters when two anchors are trusted at once (a rotation
+    overlap window): the self-signed new root and a cross-signed bridge for it
+    share a subject and key but are different certificates, and it rejects a
+    forged self-signed cert that copies the anchor's subject.
+    """
     by_subject: Dict[bytes, List[Certificate]] = {}
     for c in list(pool) + list(roots):
         by_subject.setdefault(c.cert.subject.public_bytes(), []).append(c)
@@ -101,7 +109,7 @@ def _find_chain(leaf: Certificate, roots: Sequence[Certificate],
     def rec(current: Certificate, seen) -> Optional[Tuple[Certificate, ...]]:
         if current.cert.subject.public_bytes() in root_subjects:
             for r in roots:
-                if r.cert.subject == current.cert.subject:
+                if _same_cert(r, current):
                     return (current,)
         for parent in by_subject.get(current.cert.issuer.public_bytes(), []):
             if parent.subject == current.subject:
@@ -307,6 +315,11 @@ def _same_public_key(a: Certificate, b: Optional[Certificate]) -> bool:
         serialization.Encoding.DER,
         serialization.PublicFormat.SubjectPublicKeyInfo)
     return pa == pb
+
+
+def _same_cert(a: Certificate, b: Certificate) -> bool:
+    """True when both handles are the same certificate (DER-identical)."""
+    return a.der() == b.der()
 
 
 def _chain_issuer(chain: Optional[_Chain]) -> Optional[Certificate]:

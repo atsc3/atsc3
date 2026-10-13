@@ -42,7 +42,8 @@ The pieces are the two optional packages in the workspace:
    This is a **synthetic, inspectable reference**, not a consumer-broadcast
    replacement.  No receivable stream carries our signature or DRM, so the
    round trip is gated by construction rather than proven on air; the receiver
-   trusts **our root only** (fail-closed).  For the persistent, database-backed
+   trusts **our anchors only** (fail-closed, and more than one during a
+   rotation).  For the persistent, database-backed
    operator application see the ``openatsc3-ca`` Django app in the repository;
    the library CLI below is enough for the walkthrough.
 
@@ -229,8 +230,74 @@ Receive and verify the same frame:
    assert report.ok, security.describe(report)
 
 ``security.verify_streams`` accepts a pluggable provider; ``openatsc3`` is the
-default and the trust store is a list of root certificates (here the PEM
-loaded from ``out/ca/root/root.cert.pem``).
+default and the trust store is a set of root certificates (here the PEM loaded
+from ``out/ca/root/root.cert.pem``).  Pass a
+:class:`atsc3lib.security.TrustStore` to hold **several anchors at once**: a
+receiver trusts every anchor, so a rotation can overlap old and new roots
+(``load_trust_store`` then ``add``/``discard``) and drop the old anchor once no
+live chain needs it.  Trust is matched on anchor *identity*, not subject name, so
+a forged root copying the anchor's subject is rejected (A/360 5.4 stores a set
+of trusted roots).
+
+Rotating the receiver trust anchor
+----------------------------------
+
+A/360 5.4 has a receiver store a **set** of trusted roots, so a rotation is a
+sequence of overlapping updates, never a one-step swap.  On the transmitter/CA
+side the mechanics are the operator runbook's Ceremony F (``cross-sign`` +
+``rotation-bundle``, :doc:`ca-operator-runbook`); on the receiver side you widen
+then narrow the trusted set:
+
+1. **Generate and bridge.**  Create the new root and cross-sign it under the old
+   one, so a verifier that still trusts only the old anchor can path-build to
+   new-root chains:
+
+   .. code-block:: bash
+
+      openatsc3-pki cross-sign --new-root new-root.cert.pem \
+          --old-root old-root.cert.pem --shares <3 shares> --out new-root-cross.pem
+
+2. **Add, don't replace.**  Put the new anchor *into the receiver trust store
+   alongside the old* and ship that update.  Keep the old anchor trusted.
+
+   .. code-block:: python
+
+      from atsc3lib import security
+
+      store = security.load_trust_store(["out/ca/root/root.cert.pem"])  # old anchor
+      store.add(new_root)              # overlap window: trust old + new
+      # deploy `store` to the receiver; verification now accepts either root
+
+3. **Cut over issuance.**  Once the receivers you can reach carry the new anchor,
+   issue from the new root.  Keep the old anchor in the set while any live chain
+   still reaches it (the bridge covers new-root chains under the old anchor).
+4. **Retire the old anchor.**  After the old root's certificates expire (or are
+   reissued), drop it:
+
+   .. code-block:: python
+
+      store.discard(old_root)
+
+At the command line, pass one ``--trust-root`` per anchor during the overlap
+window:
+
+.. code-block:: bash
+
+   atsc3-decode out/tx_whut.iq --rate 6912000 --fmt cs8 --plp 16 \
+       --trust-root out/ca/root/root.cert.pem \
+       --trust-root out/new-root/root/root.cert.pem --require-signature
+
+Anchors are matched by certificate *identity*, not subject name, so the window is
+unambiguous even when the new root reuses the old root's subject DN.  The
+suggested order is **add → cut over → retire**; dropping the old anchor before
+every reachable receiver has the new one locks those receivers out.
+
+.. warning::
+
+   This works for receivers you can **update** — our software receiver, or a
+   device whose manufacturer ships the new store in firmware.  A hardcoded or
+   abandoned consumer receiver cannot take a new anchor at all, so its trust
+   set is frozen and root compromise is terminal for it.
 
 Operating the CA beyond the walkthrough
 ---------------------------------------

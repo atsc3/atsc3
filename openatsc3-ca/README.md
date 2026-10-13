@@ -175,9 +175,21 @@ openatsc3-pki sign-request --request acme.req.der \
     --out acme.pem
 ```
 
-`openatsc3-pki quorum-combine --shares ... --out root.key.pem` reconstructs the
-key for recovery/HSM import. Shares are written `0600`; a self-check confirms a
+`openatsc3-pki quorum-verify --shares ...` checks that a quorum reconstructs a
+valid key without writing it out; `quorum-reshare` re-splits into fresh shares
+**in memory** (custodian change) and aborts if fewer than the threshold are
+present; `quorum-combine --out root.key.pem` reconstructs the whole key for
+recovery/HSM import only. Shares are written `0600`; a self-check confirms a
 quorum reconstructs before the original key media is destroyed.
+
+For root rotation, `openatsc3-pki cross-sign --new-root new.cert.pem --old-root
+old.cert.pem --shares ... --out cross.pem` issues the new root's key under the
+outgoing root (a rotation bridge), so a verifier holding the old anchor can
+path-build to new-root certificates until the new anchor is distributed;
+`rotation-bundle` packages the new anchor, bridge, and a hashed manifest for
+trust stores. Ceremony minutes are recorded with `openatsc3-pki minutes` (binds
+request/result/issuer by SHA-256, optionally `--shares`-signed) and checked with
+`verify-minutes --issuer <cert>`.
 
 Once the root is generated off-box, register only its public anchor:
 `python manage.py import-signed --cert root.cert.pem --profile root`. On an

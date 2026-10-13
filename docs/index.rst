@@ -49,7 +49,8 @@ Start here
 * :doc:`live-streaming` — the current state of *live* (real-time) reception,
   the frame budget, and what CPU/host is needed to keep up.
 * :doc:`pki-transmission` — create a certificate authority, issue a
-  broadcaster certificate, transmit a signed frame, and receive and verify it.
+  broadcaster certificate, transmit a signed frame, and receive and verify it;
+  includes rotating the receiver trust anchor (overlap).
 * :doc:`ca-operator-runbook` — operate the CA service with an air-gapped 3-of-5
   quorum root: root generation, tenant-CA/responder ceremonies, DR.
 

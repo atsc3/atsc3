@@ -138,6 +138,52 @@ def issue_tenant_ca(subject: SubjectInfo, key: "KeyLike", root: "Certificate",
     return issue_ca(subject, key, root, root_key, days=days)
 
 
+def cross_sign_root(new_root: "Certificate", old_issuer: "Certificate",
+                    old_key: "KeyLike", days: int = 3650) -> "Certificate":
+    """Cross-sign a new root's key under the outgoing root (rotation bridge).
+
+    The result carries the *new* root's subject and public key but is issued by
+    the *old* root, so a verifier that still trusts only the old anchor can
+    path-build through it to certificates signed by the new root key.  A full
+    rotation must also distribute the new self-signed anchor; for hardcoded
+    receivers that is out of scope (see the operator runbook).
+    """
+    new_public = new_root.cert.public_key()
+    if not isinstance(new_public, ec.EllipticCurvePublicKey):
+        raise ValueError("new root must be an EC public key")
+    now = _dt.datetime.now(_dt.timezone.utc)
+    not_after = min(new_root.cert.not_valid_after_utc,
+                    old_issuer.cert.not_valid_after_utc,
+                    now + _dt.timedelta(days=days))
+    if not_after <= now:
+        raise ValueError("outgoing root has no remaining validity to cross-sign")
+    builder = (
+        x509.CertificateBuilder()
+        .subject_name(new_root.cert.subject)
+        .issuer_name(old_issuer.cert.subject)
+        .public_key(new_public)
+        .serial_number(_serial())
+        .not_valid_before(now - _dt.timedelta(minutes=1))
+        .not_valid_after(not_after)
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None),
+                       critical=True)
+        .add_extension(
+            x509.KeyUsage(digital_signature=False, content_commitment=False,
+                          key_encipherment=False, data_encipherment=False,
+                          key_agreement=False, key_cert_sign=True,
+                          crl_sign=True, encipher_only=False,
+                          decipher_only=False),
+            critical=True)
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(new_public),
+                       critical=False)
+        .add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(
+                _signer.as_signer(old_key).public),
+            critical=False)
+    )
+    return _sign(builder, old_key)
+
+
 def issue_signaling_signer(subject: SubjectInfo, key: "KeyLike",
                            issuer: "Certificate", issuer_key: "KeyLike",
                            bsids: Iterable[int], days: int = 365) -> "Certificate":

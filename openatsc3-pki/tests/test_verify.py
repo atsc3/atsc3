@@ -163,6 +163,49 @@ def _subject(common_name, organization):
                        organization=organization)
 
 
+def _ca_subject():
+    return SubjectInfo(common_name="Acme Intermediate CA",
+                       organizational_unit="ATSC Trust Authority",
+                       organization="OpenATSC3")
+
+
+def test_find_chain_bridges_overlap_with_cross_signed_root(tmp_path):
+    """A cross-signed new root chains when only the old anchor, or both, are trusted."""
+    from openatsc3_pki import ca, x509
+
+    old = ca.CertificateAuthority(str(tmp_path / "old"))
+    old.init_root()
+    new = ca.CertificateAuthority(str(tmp_path / "new"))
+    new.init_root(common_name="OpenATSC3 Root CA (new)")
+    cross = x509.cross_sign_root(new.load_root(), old.load_root(),
+                                 old.load_root_key())
+    leaf = x509.issue_ca(_ca_subject(), keys.generate(keys.CA_CURVE),
+                         new.load_root(), new.load_root_key())
+
+    bridged = verify._find_chain(leaf, [old.load_root()], [cross])
+    assert bridged is not None
+    assert bridged.root.der() == old.load_root().der()
+
+    overlap = verify._find_chain(leaf, [old.load_root(), new.load_root()], [cross])
+    assert overlap is not None
+    assert overlap.root.der() in {old.load_root().der(), new.load_root().der()}
+
+
+def test_find_chain_rejects_subject_collision_fake_root():
+    """A forged self-signed cert copying the anchor's subject is not trusted."""
+    from openatsc3_pki import x509
+
+    subject = SubjectInfo(common_name="OpenATSC3 Root CA",
+                          organizational_unit="ATSC Trust Authority",
+                          organization="OpenATSC3")
+    good = x509.issue_root(subject, keys.generate(keys.ROOT_CURVE))
+    atk_key = keys.generate(keys.ROOT_CURVE)
+    atk = x509.issue_root(subject, atk_key)
+    leaf = x509.issue_ca(_ca_subject(), keys.generate(keys.CA_CURVE), atk, atk_key)
+
+    assert verify._find_chain(leaf, [good], [atk]) is None
+
+
 def test_cdt_with_next_cert_carries_rollover_window(authority, now):
     """A CertReplacement CDT carries NextCert and verifies (A/360 5.2.2.2)."""
     root = authority.load_root()

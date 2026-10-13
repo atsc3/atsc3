@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -68,30 +69,65 @@ def cmd_show(args) -> int:
     return 0
 
 
-def cmd_sign_request(args) -> int:
-    """Offline: sign a ceremony request with a CA key, or a k-of-n quorum of shares."""
-    from . import ceremony, keys, quorum
+def _read_shares(paths):
+    out = []
+    for path in paths:
+        with open(path, "rb") as fh:
+            out.append(fh.read())
+    return out
 
-    with open(args.request, "rb") as fh:
-        request = fh.read()
-    if args.shares:
-        share_bytes = []
-        for path in args.shares:
-            with open(path, "rb") as fh:
-                share_bytes.append(fh.read())
+
+def _load_signer_key(key_path, share_paths):
+    """A signing key from a PEM file, or reconstructed from a k-of-n quorum."""
+    from . import keys, quorum
+
+    if share_paths:
         try:
-            key = keys.load_private_bytes(quorum.combine(share_bytes))
+            return keys.load_private_bytes(quorum.combine(_read_shares(share_paths)))
         except ValueError:
             print("error: shares did not reconstruct a valid key "
                   "(need at least the threshold)", file=sys.stderr)
-            return 2
-    else:
-        key = keys.load_private(args.key)
+            return None
+    return keys.load_private(key_path)
+
+
+def cmd_sign_request(args) -> int:
+    """Offline: sign a ceremony request with a CA key, or a k-of-n quorum of shares."""
+    from . import ceremony
+
+    key = _load_signer_key(args.key, args.shares)
+    if key is None:
+        return 2
+    with open(args.request, "rb") as fh:
+        request = fh.read()
     cert = ceremony.sign_request(request, key)
     data = cert.pem() if args.out.endswith(".pem") else cert.der()
     _write_0600(args.out, data)
     print(f"signed request -> {args.out}")
     _print_cert(cert)
+    return 0
+
+
+def cmd_cross_sign(args) -> int:
+    """Offline: cross-sign a new root under the outgoing root (rotation bridge)."""
+    from . import x509
+
+    key = _load_signer_key(args.key, args.shares)
+    if key is None:
+        return 2
+    with open(args.new_root, "rb") as fh:
+        new_root = x509.load_pem(fh.read())
+    with open(args.old_root, "rb") as fh:
+        old_issuer = x509.load_pem(fh.read())
+    try:
+        cross = x509.cross_sign_root(new_root, old_issuer, key, days=args.days)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    data = cross.pem() if args.out.endswith(".pem") else cross.der()
+    _write_0600(args.out, data)
+    print(f"cross-signed new root -> {args.out} (issuer: {old_issuer.subject})")
+    _print_cert(cross)
     return 0
 
 
@@ -122,17 +158,138 @@ def cmd_quorum_combine(args) -> int:
     """Reconstruct a key from shares (recovery/HSM import)."""
     from . import quorum
 
-    share_bytes = []
-    for path in args.shares:
-        with open(path, "rb") as fh:
-            share_bytes.append(fh.read())
     try:
-        secret = quorum.combine(share_bytes)
+        secret = quorum.combine(_read_shares(args.shares))
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     _write_0600(args.out, secret)
     print(f"reconstructed key -> {args.out} (0600)")
+    return 0
+
+
+def cmd_quorum_reshare(args) -> int:
+    """Re-split into fresh shares in memory (custodian change, Ceremony E)."""
+    from . import keys, quorum
+
+    old = _read_shares(args.shares)
+    try:
+        new = quorum.reshare(old, args.threshold, args.shares_out)
+        secret = quorum.combine(old)
+        keys.load_private_bytes(secret)
+    except ValueError:
+        print("error: shares did not reconstruct a valid key "
+              "(need at least the threshold); nothing written", file=sys.stderr)
+        return 2
+    out_dir = Path(args.out_dir)
+    written = []
+    for index, share in enumerate(new, start=1):
+        path = str(out_dir / f"share-{index}")
+        _write_0600(path, share)
+        written.append(path)
+    if quorum.combine(new[:args.threshold]) != secret:
+        print("error: self-check failed; shares not written correctly",
+              file=sys.stderr)
+        return 2
+    print(f"wrote {len(written)} fresh shares ({args.threshold}-of-{args.shares_out}) "
+          f"to {out_dir}")
+    print("destroy the superseded shares and any reconstructed key media.")
+    return 0
+
+
+def cmd_quorum_verify(args) -> int:
+    """Check that shares reconstruct a valid key without writing it out."""
+    from . import keys, quorum
+
+    try:
+        key = keys.load_private_bytes(quorum.combine(_read_shares(args.shares)))
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(f"ok: {len(args.shares)} shares reconstruct a valid {key.curve} key")
+    return 0
+
+
+def _read_pairs(specs, loader):
+    out = {}
+    for spec in specs:
+        name, sep, path = spec.partition("=")
+        if not sep or not name:
+            print(f"error: expected NAME=PATH, got {spec!r}", file=sys.stderr)
+            return None
+        out[name] = loader(path)
+    return out
+
+
+def cmd_minutes(args) -> int:
+    """Write a tamper-evident minutes record for a ceremony operation."""
+    from . import rotation, x509
+
+    def _read(path):
+        with open(path, "rb") as fh:
+            return fh.read()
+
+    def _cert(path):
+        with open(path, "rb") as fh:
+            return x509.load_pem(fh.read())
+
+    artifacts = _read_pairs(args.artifact, _read)
+    certs = _read_pairs(args.cert, _cert)
+    if artifacts is None or certs is None:
+        return 2
+    record = rotation.build_minutes(args.op, artifacts=artifacts, certs=certs,
+                                    witnesses=args.witness, note=args.note)
+    if args.key or args.shares:
+        key = _load_signer_key(args.key, args.shares)
+        if key is None:
+            return 2
+        record = rotation.sign_minutes(record, key)
+    _write_0600(args.out, (json.dumps(record, indent=2) + "\n").encode())
+    signed = "signed" if "signature" in record else "unsigned"
+    print(f"minutes ({signed}) -> {args.out} "
+          f"(digest {record['digest'][:16]}...)")
+    return 0
+
+
+def cmd_verify_minutes(args) -> int:
+    """Verify a minutes record's self-digest (and signature, if present)."""
+    from . import rotation, x509
+
+    with open(args.minutes, "rb") as fh:
+        record = json.load(fh)
+    issuer = None
+    if args.issuer:
+        with open(args.issuer, "rb") as fh:
+            issuer = x509.load_pem(fh.read())
+    try:
+        rotation.verify_minutes(record, issuer)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(f"ok: {record.get('op')} minutes, {len(record.get('witnesses', []))} "
+          f"witness(es), digest {record['digest'][:16]}...")
+    return 0
+
+
+def cmd_rotation_bundle(args) -> int:
+    """Offline: assemble the distribution artifacts for a root rotation."""
+    from . import rotation, x509
+
+    with open(args.new_root, "rb") as fh:
+        new_root = x509.load_pem(fh.read())
+    with open(args.cross, "rb") as fh:
+        cross = x509.load_pem(fh.read())
+    old_root = None
+    if args.old_root:
+        with open(args.old_root, "rb") as fh:
+            old_root = x509.load_pem(fh.read())
+    files = rotation.rotation_bundle(new_root, cross, old_root,
+                                     witnesses=args.witness)
+    out_dir = Path(args.out_dir)
+    for name, data in files.items():
+        _write_0600(str(out_dir / name), data)
+    print(f"rotation bundle -> {out_dir} ({len(files)} files, "
+          f"manifest {rotation.MANIFEST_NAME})")
     return 0
 
 
@@ -188,6 +345,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", required=True, help="output certificate (.pem or .der)")
     p.set_defaults(func=cmd_sign_request)
 
+    p = subs.add_parser("cross-sign",
+                        help="offline: cross-sign a new root under the outgoing root")
+    p.add_argument("--new-root", required=True,
+                   help="new root's self-signed certificate PEM")
+    p.add_argument("--old-root", required=True,
+                   help="outgoing root certificate PEM (issuer/anchor)")
+    source = p.add_mutually_exclusive_group(required=True)
+    source.add_argument("--key", help="outgoing root private key PEM")
+    source.add_argument("--shares", nargs="+", metavar="SHARE",
+                        help="k-of-n quorum shares (>= the threshold)")
+    p.add_argument("--days", type=int, default=3650)
+    p.add_argument("--out", required=True, help="output certificate (.pem or .der)")
+    p.set_defaults(func=cmd_cross_sign)
+
     p = subs.add_parser("quorum-split",
                         help="air-gapped: split a root key into k-of-n shares")
     p.add_argument("--key", required=True, help="root private key PEM")
@@ -201,6 +372,58 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--shares", nargs="+", required=True, metavar="SHARE")
     p.add_argument("--out", required=True, help="output key PEM (0600)")
     p.set_defaults(func=cmd_quorum_combine)
+
+    p = subs.add_parser("quorum-reshare",
+                        help="air-gapped: re-split into fresh shares (custodian change)")
+    p.add_argument("--shares", nargs="+", required=True, metavar="SHARE",
+                   help="current quorum shares (>= the threshold)")
+    p.add_argument("--threshold", type=int, required=True, help="k shares required")
+    p.add_argument("--shares-out", type=int, required=True,
+                   help="n fresh shares to create")
+    p.add_argument("--out-dir", required=True, help="directory for new share-N files")
+    p.set_defaults(func=cmd_quorum_reshare)
+
+    p = subs.add_parser("quorum-verify",
+                        help="check that shares reconstruct a valid key (no output)")
+    p.add_argument("--shares", nargs="+", required=True, metavar="SHARE")
+    p.set_defaults(func=cmd_quorum_verify)
+
+    p = subs.add_parser("minutes",
+                        help="write a tamper-evident minutes record for a ceremony")
+    p.add_argument("--op", required=True,
+                   help="operation name (e.g. sign-request, root-rotation)")
+    p.add_argument("--artifact", action="append", default=[], metavar="NAME=PATH",
+                   help="an input/output file bound by SHA-256 (repeatable)")
+    p.add_argument("--cert", action="append", default=[], metavar="NAME=PATH",
+                   help="a certificate bound by fingerprint (repeatable)")
+    p.add_argument("--witness", action="append", default=[], metavar="NAME",
+                   help="a witness present (repeatable)")
+    p.add_argument("--note", default="", help="free-text reason/context")
+    sign = p.add_mutually_exclusive_group()
+    sign.add_argument("--key", help="sign the minutes with this key PEM")
+    sign.add_argument("--shares", nargs="+", metavar="SHARE",
+                      help="sign the minutes with a k-of-n quorum")
+    p.add_argument("--out", required=True, help="output minutes JSON")
+    p.set_defaults(func=cmd_minutes)
+
+    p = subs.add_parser("verify-minutes",
+                        help="verify a minutes record's digest and signature")
+    p.add_argument("--minutes", required=True, help="minutes JSON to verify")
+    p.add_argument("--issuer", default=None,
+                   help="issuer certificate PEM (required if signed)")
+    p.set_defaults(func=cmd_verify_minutes)
+
+    p = subs.add_parser("rotation-bundle",
+                        help="offline: assemble a root-rotation distribution bundle")
+    p.add_argument("--new-root", required=True,
+                   help="new root's self-signed certificate PEM")
+    p.add_argument("--cross", required=True,
+                   help="cross-signed bridge certificate PEM (from cross-sign)")
+    p.add_argument("--old-root", default=None,
+                   help="outgoing root certificate PEM (included when given)")
+    p.add_argument("--witness", action="append", default=[], metavar="NAME")
+    p.add_argument("--out-dir", required=True, help="output bundle directory")
+    p.set_defaults(func=cmd_rotation_bundle)
     return parser
 
 

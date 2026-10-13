@@ -167,17 +167,61 @@ Ceremony E — custodian change / share re-split
 ----------------------------------------------
 
 To onboard/offboard a custodian or replace a compromised share, a quorum
-reconstructs the key on the air-gapped host and re-splits it:
+reconstructs the key on the air-gapped host and re-splits it **in memory** —
+``quorum-reshare`` never writes the whole key to disk:
 
 .. code-block:: bash
 
-   openatsc3-pki quorum-combine --shares <3 shares> --out root.key.pem
-   openatsc3-pki quorum-split --key root.key.pem \
-       --threshold 3 --shares 5 --out-dir custody/new-shares
-   # destroy root.key.pem and the superseded shares after the self-check
+   # self-check first (reconstructs a valid key, writes nothing)
+   openatsc3-pki quorum-verify --shares <3 shares>
 
-Treat the reconstruction as a full ceremony; the reconstructed key exists only in
-memory and on ephemeral media that must be destroyed.
+   openatsc3-pki quorum-reshare --shares <3 shares> \
+       --threshold 3 --shares-out 5 --out-dir custody/new-shares
+   # self-check runs and aborts (nothing written) if the shares are < threshold
+
+Then destroy the superseded shares.  Treat the reconstruction as a full
+ceremony; any reconstructed key media is ephemeral and must be destroyed.
+``quorum-combine`` (writes the whole key with 0600) is only for recovery/HSM
+import, never for routine re-splitting.
+
+Ceremony F — root rotation (last resort)
+----------------------------------------
+
+Root rotation issues a new root and makes it verifiable to anyone who still
+trusts only the outgoing anchor by **cross-signing** the new root's key under the
+old root.  On the air-gapped host, with the new root's self-signed certificate
+and the old root's certificate:
+
+.. code-block:: bash
+
+   openatsc3-pki cross-sign --new-root new-root.cert.pem \
+       --old-root old-root.cert.pem \
+       --shares <3 shares> --out new-root-cross.pem
+
+Assemble the distribution bundle (the new anchor, the bridge, and a hashed
+manifest) for the teams that operate trust stores:
+
+.. code-block:: bash
+
+   openatsc3-pki rotation-bundle --new-root new-root.cert.pem \
+       --cross new-root-cross.pem --old-root old-root.cert.pem \
+       --witness <name> --out-dir rotation-bundle
+
+Online, the app keeps a **single active anchor**; the cutover to the new root is
+the deliberate ``import-signed --profile root`` with ``new-root.cert.pem``, and
+the bridge covers verifiers that still pin the old root during the transition.
+
+The cross certificate carries the new root's subject and key but is issued by the
+old root, so a verifier holding the old anchor can path-build *old root → cross
+certificate → new-root-issued certificates* until the new anchor is distributed.
+This does **not** change a hardcoded consumer trust anchor: if the receiver pins
+the old root, rotation cannot reach it.  A full rotation therefore also requires
+distributing the new self-signed anchor to every trust store (out of scope for
+hardcoded receivers) and is tracked as a Phase 4 item.
+
+The receiver-side procedure — add the new anchor, cut over, then retire the old
+one (the "add → cut over → retire" overlap) — is in
+:doc:`pki-transmission` ("Rotating the receiver trust anchor").
 
 Disaster recovery
 -----------------
@@ -193,18 +237,31 @@ Disaster recovery
 Root rotation (future)
 ----------------------
 
-Root rotation requires generating a new root, cross-signing under the old root
-where possible, and distributing the new anchor to every trust store.  For
-hardcoded consumer receivers this is not generally possible; rotation is
-therefore a last resort and is tracked as a Phase 4 item.
+The **cross-signing bridge** is implemented (Ceremony F).  What remains is
+generating and distributing the new self-signed anchor to every trust store; for
+hardcoded consumer receivers this is not generally possible, so rotation stays a
+last resort and is tracked as a Phase 4 item.
 
 Evidence and retention
 ----------------------
 
 For each ceremony keep: the pinned tool commit, request and result hashes, the
 certificate serial/SKI, which shares were used, the witness attestations, and the
-share-receipt log.  Audit events are appended by the app
-(``request-*``, ``import-signed``, ``publish``).
+share-receipt log.  Record the transcript with ``minutes`` (binds the inputs and
+outputs by SHA-256, optionally signed with ``--key``/``--shares``) and check it
+with ``verify-minutes`` before filing:
+
+.. code-block:: bash
+
+   openatsc3-pki minutes --op sign-request \
+       --artifact request=acme.req.der --artifact result=acme.pem \
+       --cert issuer=root.cert.pem --witness <name> \
+       --shares <3 shares> --out acme.minutes.json
+   openatsc3-pki verify-minutes --minutes acme.minutes.json \
+       --issuer root.cert.pem
+
+Audit events are appended by the app (``request-*``, ``import-signed``,
+``publish``).
 
 Command map
 -----------
@@ -218,13 +275,21 @@ Command map
    * - Generate root / inspect
      - ``openatsc3-pki init-root`` / ``openatsc3-pki show``
    * - Split / recombine quorum
-     - ``openatsc3-pki quorum-split`` / ``quorum-combine``
+     - ``openatsc3-pki quorum-split`` / ``quorum-combine`` / ``quorum-verify``
+   * - Re-split (custodian change)
+     - ``openatsc3-pki quorum-reshare``
    * - Register the anchor
      - ``python manage.py import-signed --profile root``
    * - Request tenant CA / responder
      - ``python manage.py request-tenant-ca`` / ``request-root-responder``
    * - Air-gapped sign
      - ``openatsc3-pki sign-request`` (``--key`` or ``--shares``)
+   * - Cross-sign a new root
+     - ``openatsc3-pki cross-sign``
+   * - Assemble a rotation bundle
+     - ``openatsc3-pki rotation-bundle``
+   * - Record / verify minutes
+     - ``openatsc3-pki minutes`` / ``verify-minutes``
    * - Import signed result
      - ``python manage.py import-signed``
    * - Approve the customer
@@ -233,8 +298,11 @@ Command map
 Known gaps
 ----------
 
-* No ``quorum-reshare``, ``root-rotate``, or signed-minutes tooling; Ceremonies D
-  and E and rotation are procedural.
+* Root rotation is procedural beyond the cross-signing bridge and bundle
+  (Ceremony F): the new anchor must still be distributed to trust stores, and a
+  verifier that pins the old root hardcoded cannot be reached.
+* The app keeps a single active root anchor; there is no dual-anchor transition
+  state online (the bridge covers the transition on the verifier side).
 * ``OPENATSC3_CA_ROOT_OFFLINE`` must be set explicitly; without it the online app
   would try to sign with a local root key (present only in test/dev).
 

@@ -27,6 +27,7 @@ from .base import (
     register,
     set_provider,
 )
+from .truststore import TrustStore
 
 __all__ = [
     "CDT_TABLE_ID",
@@ -35,11 +36,13 @@ __all__ = [
     "SecurityReport",
     "SignableTable",
     "TableVerdict",
+    "TrustStore",
     "available",
     "get_provider",
     "register",
     "set_provider",
     "load_trust_roots",
+    "load_trust_store",
     "verify_streams",
     "describe",
 ]
@@ -59,13 +62,24 @@ def load_trust_roots(paths: Sequence[str], provider=None) -> list:
     return get_provider(provider).load_trust_anchors(paths)
 
 
+def load_trust_store(paths: Sequence[str], provider=None) -> TrustStore:
+    """Load a multi-anchor :class:`TrustStore` from PEM files.
+
+    Unlike :func:`load_trust_roots` (a plain list), the store de-duplicates and
+    supports add/discard, so a rotation can hold old and new anchors during an
+    overlap window.
+    """
+    return TrustStore(load_trust_roots(paths, provider=provider))
+
+
 def verify_streams(streams, trust_roots: Sequence, now=None,
                    slt_bsids: Optional[Sequence[int]] = None,
                    provider=None) -> SecurityReport:
     """Verify the LLS security tables carried in a PLP's decoded streams.
 
     ``streams`` is a :class:`~atsc3lib.payload.DecodedStreams`.  ``trust_roots``
-    are the receiver's trust anchors (see :func:`load_trust_roots`).
+    are the receiver's trust anchors (see :func:`load_trust_roots`, or a
+    :class:`TrustStore` from :func:`load_trust_store`).
     ``slt_bsids`` defaults to the parsed SLT's bsid set, which A/360 5.2.2.6
     item 3b requires the signer's ``id-atsc-sdattr-bsid`` to equal.  ``provider``
     selects a registered provider by name (default: the active one).
