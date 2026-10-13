@@ -51,6 +51,9 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    # WhiteNoise serves collected static (the admin) in production; in DEBUG the
+    # dev server's staticfiles finder handles it.
+    *(["whitenoise.middleware.WhiteNoiseMiddleware"] if not DEBUG else []),
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -132,7 +135,17 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = "static/"
+#: Where ``collectstatic`` writes; WhiteNoise serves it from the app (admin).
+STATIC_ROOT = os.environ.get(
+    "OPENATSC3_CA_STATIC_ROOT", str(BASE_DIR / "staticfiles"))
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+#: Origins trusted for the CSRF check (the ALB / service hostname).  Behind the
+#: load balancer the request is HTTPS at the edge, HTTP to the task.
+CSRF_TRUSTED_ORIGINS = [
+    o for o in os.environ.get("OPENATSC3_CA_CSRF_TRUSTED_ORIGINS", "").split(",") if o
+]
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 #: Root of the materialized PEM tree (root/, issuing/, broadcasters/<name>/).
 OPENATSC3_CA_BASE_DIR = os.environ.get(

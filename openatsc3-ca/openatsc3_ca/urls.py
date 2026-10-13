@@ -6,6 +6,7 @@ from django.urls import path
 from openatsc3_ca.catalog import api, views
 
 urlpatterns = [
+    path("healthz", views.healthz, name="healthz"),
     path("admin/", admin.site.urls),
     path("stripe/webhook/", views.stripe_webhook, name="stripe-webhook"),
     path("api/v1/tenant/", api.tenant_info, name="api-tenant"),

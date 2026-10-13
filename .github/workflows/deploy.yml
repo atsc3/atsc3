@@ -1,0 +1,108 @@
+name: Deploy (openatsc3-ca)
+
+# Build the container, push it to ECR, apply migrations, and roll the ECS
+# service.  Infrastructure itself is Terraform and is applied by hand (see
+# .github/workflows/tf-plan.yml); this workflow only builds and releases.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "openatsc3-ca/**"
+      - "openatsc3-pki/**"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        type: choice
+        options: [dev, prod]
+        default: dev
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-openatsc3-ca-${{ inputs.environment || 'dev' }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  PROJECT: openatsc3-ca
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment || 'dev' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve names
+        id: names
+        run: |
+          echo "env_name=${{ inputs.environment || 'dev' }}" >> "$GITHUB_OUTPUT"
+          echo "ecr_repo=${PROJECT}-${{ inputs.environment || 'dev' }}" >> "$GITHUB_OUTPUT"
+          echo "cluster=${PROJECT}-${{ inputs.environment || 'dev' }}-cluster" >> "$GITHUB_OUTPUT"
+          echo "service=${PROJECT}-${{ inputs.environment || 'dev' }}-svc" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to Amazon ECR
+        run: |
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          ECR="$ACCOUNT.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          echo "ecr=$ECR" >> "$GITHUB_ENV"
+          aws ecr get-login-password | docker login --username AWS --password-stdin "$ECR"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push the image
+        run: |
+          IMAGE="${ecr}/${{ steps.names.outputs.ecr_repo }}"
+          SHA="$(git rev-parse --short HEAD)"
+          docker buildx build \
+            --file openatsc3-ca/Dockerfile \
+            --tag "${IMAGE}:${SHA}" \
+            --tag "${IMAGE}:latest" \
+            --push .
+          echo "IMAGE=${IMAGE}:${SHA}" >> "$GITHUB_ENV"
+
+      - name: Run migrations (one-off ECS task)
+        run: |
+          CLUSTER="${{ steps.names.outputs.cluster }}"
+          SERVICE="${{ steps.names.outputs.service }}"
+          MIGRATE="${PROJECT}-${{ steps.names.outputs.env_name }}-migrate"
+          NET=$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" \
+                  --query 'services[0].networkConfiguration.awsvpcConfiguration' --output json)
+          SUBNETS=$(echo "$NET" | jq -r '.subnets | join(",")')
+          SG=$(echo "$NET" | jq -r '.securityGroups | join(",")')
+          TASK=$(aws ecs run-task --cluster "$CLUSTER" --task-definition "$MIGRATE" \
+                   --launch-type FARGATE \
+                   --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SG],assignPublicIp=DISABLED}" \
+                   --query 'tasks[0].taskArn' --output text)
+          aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK"
+          CODE=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK" \
+                   --query 'tasks[0].containers[0].exitCode' --output text)
+          test "$CODE" = "0" || { echo "migrate task exit code $CODE"; exit 1; }
+
+      - name: Roll the service to the new image
+        run: |
+          CLUSTER="${{ steps.names.outputs.cluster }}"
+          SERVICE="${{ steps.names.outputs.service }}"
+          FAMILY="${PROJECT}-${{ steps.names.outputs.env_name }}-web"
+          NEW=$(aws ecs describe-task-definition --task-definition "$FAMILY" \
+                  --query 'taskDefinition' \
+                | jq --arg IMG "$IMAGE" \
+                    '.containerDefinitions[0].image = $IMG
+                     | del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy)')
+          echo "$NEW" | aws ecs register-task-definition --cli-input-json file:///dev/stdin >/dev/null
+          aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" --task-definition "$FAMILY"
+          aws ecs wait services-stable --cluster "$CLUSTER" --services "$SERVICE"
+
+      - name: Summary
+        run: echo "Deployed $IMAGE to ${{ steps.names.outputs.env_name }}" >> "$GITHUB_STEP_SUMMARY"

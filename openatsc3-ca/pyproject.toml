@@ -16,9 +16,14 @@ dependencies = [
     "openatsc3-pki>=0.1,<0.2",
     "django>=5.1,<6",
     "psycopg[binary]>=3.1",
+    "whitenoise>=6",
 ]
 
 [project.optional-dependencies]
+# Production WSGI server (the container entrypoint runs gunicorn).
+prod = [
+    "gunicorn>=21",
+]
 # Rootless embedded PostgreSQL for tests / local dev without Docker.  The
 # pgserver wheel is 3.12-only, so run the test suite on Python 3.12.
 test = [

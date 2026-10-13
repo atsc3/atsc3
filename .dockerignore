@@ -1,0 +1,17 @@
+# The container build context is the monorepo root, but only the two Python
+# packages are needed.  Ignore everything, then re-include those, then drop
+# their local state and build junk.
+*
+!openatsc3-pki/
+!openatsc3-ca/
+
+**/__pycache__/
+**/*.pyc
+**/*.egg-info/
+**/.pytest_cache/
+openatsc3-ca/.venv-ca/
+openatsc3-ca/.pgdata*/
+openatsc3-ca/ca-tree/
+openatsc3-ca/staticfiles/
+openatsc3-ca/deliveries/
+openatsc3-ca/tests/

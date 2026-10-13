@@ -27,6 +27,12 @@ def _auth(token):
     return {"HTTP_AUTHORIZATION": f"Token {token}"}
 
 
+def test_healthz_ok():
+    response = Client().get("/healthz")
+    assert response.status_code == 200
+    assert response.content == b"ok"
+
+
 def test_api_requires_a_token(ca):
     _tenant_with_bundle()
     client = Client()

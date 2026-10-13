@@ -53,6 +53,8 @@ Start here
   includes rotating the receiver trust anchor (overlap).
 * :doc:`ca-operator-runbook` — operate the CA service with an air-gapped 3-of-5
   quorum root: root generation, tenant-CA/responder ceremonies, DR.
+* :doc:`deployment` — deploy the CA app to AWS with Terraform (network, RDS,
+  ECS Fargate, S3, Secrets, CI).
 
 Reference
 ---------
@@ -76,6 +78,7 @@ Reference
    live-streaming
    pki-transmission
    ca-operator-runbook
+   deployment
    python-api
 
 Indices and tables
