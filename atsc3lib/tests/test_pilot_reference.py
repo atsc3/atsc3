@@ -20,6 +20,15 @@ class TestReferenceSequence:
         r = reference_sequence(1000)
         assert set(np.unique(r)).issubset({0, 1})
 
+    def test_is_cached_by_length(self):
+        # The sequence is a fixed function of its length and is rebuilt per
+        # symbol otherwise; the cache returns the same array with the same
+        # values (bit-identical), for a large speed-up.
+        a = reference_sequence(13825)
+        b = reference_sequence(13825)
+        assert a is b
+        assert np.array_equal(a[:24], reference_sequence(24))
+
     def test_pilot_values_bpsk(self):
         vals = pilot_values(50, amplitude=1.23)
         assert np.allclose(vals.imag, 0.0)

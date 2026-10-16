@@ -181,6 +181,29 @@ class TestLiveLockPersistence:
 
     @pytest.mark.skipif(not os.path.exists(_LOCK),
                         reason="real lock-persistence capture not present")
+    def test_pipelined_matches_synchronous(self):
+        # The capture-overlapped runner must produce exactly the same decode as
+        # the synchronous loop over the same windows.
+        def cfg():
+            return LiveConfig(plp_id=16, max_frames=1, acquire_window_s=0.10)
+
+        sync = LiveReceiver(FileIqSource(_LOCK, 10e6, "cs8"), cfg())
+        for _ in range(10):
+            if not sync.run_once():
+                break
+        pipe = LiveReceiver(FileIqSource(_LOCK, 10e6, "cs8"), cfg())
+        pipe.run_pipelined(max_windows=10, queue_depth=2)
+        assert pipe.stats == sync.stats
+        assert len(pipe.streams) == len(sync.streams)
+
+    def test_pipelined_rejects_bad_depth(self):
+        receiver = LiveReceiver(ArrayIqSource(np.zeros(10, dtype=np.complex64),
+                                              10e6))
+        with pytest.raises(ValueError):
+            receiver.run_pipelined(max_windows=1, queue_depth=0)
+
+    @pytest.mark.skipif(not os.path.exists(_LOCK),
+                        reason="real lock-persistence capture not present")
     def test_config_change_triggers_relock(self, monkeypatch):
         # Emulate a multiplex reconfiguration detected at the periodic L1
         # re-check: the held lock must be replaced, not silently reused.

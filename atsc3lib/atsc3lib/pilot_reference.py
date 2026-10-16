@@ -16,12 +16,23 @@ import numpy as np
 from . import spec
 
 
+#: Cache of the reference sequence by length.  It is a fixed function of the
+#: length (A/322 8.1.2), computed by a Python LFSR loop, so rebuilding it for
+#: every symbol of a subframe is pure waste; callers copy it (``.astype``) and
+#: none mutate the returned array, so sharing it is bit-identical.  Bounded by
+#: the small set of carrier counts a capture uses.
+_REFERENCE_CACHE = {}
+
+
 def reference_sequence(length: int) -> np.ndarray:
     """The pilot reference sequence ``r_k`` (0/1) of the given length.
 
     A/322 Section 8.1.2.  The first 24 values are 1101 1000 0000 0001 0100
     0000.
     """
+    cached = _REFERENCE_CACHE.get(length)
+    if cached is not None:
+        return cached
     sr = spec.REFERENCE_SEED
     bits = np.zeros(length, dtype=np.uint8)
     for i in range(length):
@@ -30,6 +41,7 @@ def reference_sequence(length: int) -> np.ndarray:
         sr >>= 1
         if feedback:
             sr |= 0x1000
+    _REFERENCE_CACHE[length] = bits
     return bits
 
 

@@ -792,14 +792,15 @@ def build_data_symbol_pool(y: np.ndarray, t0: int, fft_size: int,
     cp_rel = common_cp_relative(noc, fft_size)
     carriers_all = (symbol_carriers(y, t0, fft_size, guard_interval, noc,
                                     n_data_symbols) if dense else None)
-    parts, owner = [], []
-    for l in range(n_data_symbols):
-        sbs = l in tuple(sbs_symbols)
-        start = t0 + (fft_size + guard_interval) * l + guard_interval
+
+    sbs_set = tuple(sbs_symbols)
+
+    def extract(l: int) -> np.ndarray:
+        sbs = l in sbs_set
         if dense:
             channel = dense_symbol_channel(
                 y, t0, fft_size, guard_interval, noc, dx, dy, l,
-                n_data_symbols, tuple(sbs_symbols), cp_rel, add_cp=add_cp,
+                n_data_symbols, sbs_set, cp_rel, add_cp=add_cp,
                 carriers_all=carriers_all)
             carriers = carriers_all[l]
             pilots = _pilots(noc, dx, dy, l, sbs, cp_rel, add_cp)
@@ -807,6 +808,7 @@ def build_data_symbol_pool(y: np.ndarray, t0: int, fft_size: int,
             data_mask[pilots] = False
             cells = (carriers / channel)[data_mask]
         else:
+            start = t0 + (fft_size + guard_interval) * l + guard_interval
             cells = data_symbol_cells(
                 y[start:start + fft_size], fft_size, noc, dx, dy, l, sbs,
                 add_cp=add_cp).cells
@@ -814,11 +816,15 @@ def build_data_symbol_pool(y: np.ndarray, t0: int, fft_size: int,
              if fi_enabled else cells)
         if sbs:
             x = x[lo_n:len(x) - hi_n]
-        parts.append(x)
-        owner.append(np.full(len(x), l, dtype=int))
+        return x
 
+    # The symbols are independent and the per-symbol work is NumPy/C-heavy, so
+    # spread them across the FEC worker count; results are returned in symbol
+    # order, so the concatenated pool is bit-identical to the serial loop.
+    parts = _parallel_fec_blocks(extract, n_data_symbols)
     cells = np.concatenate(parts)
-    symbol_of = np.concatenate(owner)
+    symbol_of = np.concatenate([np.full(len(x), l, dtype=int)
+                                for l, x in enumerate(parts)])
     if cpe is not None:
         cells = cpe_correct(cells, symbol_of, cpe.alphabet,
                             region=cpe.region(len(cells)),

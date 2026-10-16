@@ -394,6 +394,10 @@ class LiveReceiver:
         if window is None:
             self._exhausted = True
             return False
+        return self._process_window(window)
+
+    def _process_window(self, window: np.ndarray) -> bool:
+        """Run one already-read window through the lock/decode state machine."""
         self.stats.windows += 1
 
         if self._lock is None:
@@ -414,6 +418,53 @@ class LiveReceiver:
             self._lock = None
             self.stats.relocks += 1
         return True
+
+    def run_pipelined(self, max_windows: int = None,
+                      queue_depth: int = 2) -> LiveStats:
+        """Continuous reception with capture overlapped against decode.
+
+        A capture thread reads windows into a **bounded** queue while this
+        thread runs the lock/decode state machine, so the next window's SDR read
+        overlaps the current window's decode.  Bounded by ``max_windows`` (and
+        the queue depth), so it never reads or buffers without a limit.  The
+        synchronous :meth:`run_once` path is unchanged.
+        """
+        import queue as _queue
+        import threading
+
+        if queue_depth < 1:
+            raise ValueError("queue_depth must be >= 1")
+        if max_windows is None:
+            max_windows = self.config.max_windows
+        window_samples = int(self.config.acquire_window_s
+                             * self.source.sample_rate)
+        q: "_queue.Queue" = _queue.Queue(maxsize=queue_depth)
+        stop = threading.Event()
+
+        def producer():
+            sent = 0
+            while sent < max_windows and not stop.is_set():
+                window = self.source.read(window_samples)
+                if window is None:
+                    self._exhausted = True
+                    break
+                q.put(window)
+                sent += 1
+            q.put(None)                       # end-of-stream marker
+
+        thread = threading.Thread(target=producer, name="atsc3-capture",
+                                  daemon=True)
+        thread.start()
+        try:
+            while True:
+                window = q.get()
+                if window is None:
+                    break
+                self._process_window(window)
+        finally:
+            stop.set()
+            thread.join()
+        return self.stats
 
     def _relock_if_changed(self, window: np.ndarray) -> bool:
         """Re-check the L1 config on schedule; re-lock if it changed.

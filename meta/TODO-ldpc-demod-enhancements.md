@@ -138,11 +138,31 @@ Broader throughput discussion.  Status of the mandatory serial-floor fixes:
     a bounded schedule or after failed frames, and a changed configuration
     fingerprint forces a re-lock.  Acquisition (~14 s/window) is paid once per
     lock.  On the real 8 s capture: 24 windows, 1 acquisition, 29 frames.
-- **Still open:**
-  - Pipeline capture<->FEC<->network (overlap stages).
-  - Batch/parallel the pool build (the 2-D FFT part is done, B3; the per-symbol
-    dense channel loop is still serial).
-  - Speed up the BCH stage.
+## Follow-on (continued): serial-floor fixes 2-4 done (2026-10-16)
+
+- **Batch/thread the pool build (done).**  The 2-D FFT carrier cache is B3; on
+  top of it the per-symbol loop of `build_data_symbol_pool` is threaded
+  (`_parallel_fec_blocks`) and `pilot_reference.reference_sequence` is cached by
+  length (it was an uncached Python LFSR loop rebuilt for every symbol).  Pool
+  build 0.883 s -> **0.223 s** (-75%), bit-identical (gated by
+  `test_subframe1.py` threaded-vs-serial and the 117/117 air gate).  The
+  per-symbol dense channel loop is still a Python loop (threaded, not
+  vectorized).
+- **Speed up the BCH stage (done).**  `BCHCode.decode` built the received vector
+  with a Python list comprehension over ~47k bits per block; it now uses a NumPy
+  cast-and-mask.  BCH 10.3 -> **5.12 ms/block** (-50%), bit-identical
+  (`test_bch.py`, `test_fec_bch_c.py`).
+- **Pipeline capture<->FEC<->network (done for capture<->decode).**
+  `LiveReceiver.run_pipelined` reads windows on a capture thread into a bounded
+  queue while the lock/decode state machine runs on the caller's thread; the
+  synchronous `run_once` path is unchanged and the pipelined runner is gated to
+  produce identical stats (`test_live.py`).  Network-layer overlap (draining the
+  ALP/IP/LLS stage off the FEC thread) remains.
+
+Bench (same host, 256QAM 11/15, 117 blocks, best-of): FEC serial 14.34 -> 11.16 s;
+pool build 0.883 -> 0.223 s; BCH 10.3 -> 5.12 ms/block; whole frame @1/2/4 workers
+16.00/9.29/7.35 -> 13.24/7.56/5.63 s.
+
 - True-live target is < 247 ms/frame (RF33 period); sub-second (< 1 s) is
   near-live and still drops frames.
 - GPU route: raw CUDA extension (`gpubindings`) via `try: import`,

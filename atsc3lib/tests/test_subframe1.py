@@ -173,6 +173,9 @@ class TestDenseChannel:
         kwargs = dict(fft_size=fft, guard_interval=gi, noc=noc, dx=dx, dy=dy,
                       n_data_symbols=8, sbs_symbols=(), pattern='SP4_4',
                       cred_coeff=0, dense=True)
+        # Run serially so the errstate context below applies (it is thread-local)
+        # and this test isolates the caching semantics.
+        monkeypatch.setenv('ATSC3LIB_FEC_THREADS', '1')
         # The 8-symbol synthetic subframe has no trailing neighbours for its
         # last symbols, so the dense grid has uncovered points (the real 75-
         # symbol frame does not); that divide is harmless here and both paths
@@ -190,10 +193,38 @@ class TestDenseChannel:
         assert np.array_equal(cached.cells, plain.cells)
         assert np.array_equal(cached.symbol_of, plain.symbol_of)
 
+    def test_threaded_pool_matches_serial(self, monkeypatch):
+        # The per-symbol pool loop is threaded; the concatenated pool must be
+        # bit-identical to the serial loop (results are in symbol order).
+        y, _H, (fft, gi, noc, dx, dy, _cp, _add) = self._symbols(n_sym=16)
+        kwargs = dict(fft_size=fft, guard_interval=gi, noc=noc, dx=dx, dy=dy,
+                      n_data_symbols=16, sbs_symbols=(), pattern='SP4_4',
+                      cred_coeff=0, dense=False)
+        monkeypatch.setenv('ATSC3LIB_FEC_THREADS', '1')
+        serial = build_data_symbol_pool(y, 0, **kwargs)
+        monkeypatch.setenv('ATSC3LIB_FEC_THREADS', '4')
+        threaded = build_data_symbol_pool(y, 0, **kwargs)
+        assert np.array_equal(serial.cells, threaded.cells)
+        assert np.array_equal(serial.symbol_of, threaded.symbol_of)
+
 
 @pytest.mark.skipif(not (os.path.exists(_SF1) and os.path.exists(_META)),
                     reason="real-air subframe-1 fixture not present")
 class TestSf1Air:
+    def test_dense_pool_threaded_matches_serial(self, monkeypatch):
+        y = np.load(_SF1).astype(np.complex128)
+        m = json.load(open(_META))
+
+        def build(threads):
+            monkeypatch.setenv('ATSC3LIB_FEC_THREADS', str(threads))
+            return build_data_symbol_pool(
+                y, 0, m['fft'], m['gi'], m['noc'], m['dx'], m['dy'],
+                m['n_data_symbols'], sbs_symbols=tuple(m['sbs_symbols']),
+                pattern=m['pattern'], sbs_null=m['sbs_null'],
+                cred_coeff=m['cred'], fi_offset=m['fi_offset'], dense=True)
+
+        assert np.array_equal(build(1).cells, build(4).cells)
+
     def _pool(self, dense: bool = True):
         # ``dense`` (the A/322 data-PLP multi-symbol channel estimate) is the
         # receive-chain default (``decode_subframe_plp``); the 256QAM PLP does

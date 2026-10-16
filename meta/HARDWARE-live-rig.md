@@ -112,11 +112,14 @@ follow-on):
    per-config chain cache; `LiveReceiver` holds the lock across windows with a
    streaming resampler (real capture: 24 windows, 1 acquisition, 29 frames).
 2. Batch the pool build (one 2-D FFT over the subframe body; thread the
-   per-symbol channel estimation).  **[2-D FFT done (B3); per-symbol dense
-   channel loop still serial]**
+   per-symbol channel estimation).  **[done 2026-10-16]** — 2-D FFT carrier
+   cache (B3) + threaded per-symbol loop + cached pilot reference sequence;
+   pool build 0.883 -> 0.223 s.
 3. Pipeline capture <-> FEC <-> network, so frame N+1 capture overlaps frame N
-   decode.
-4. Speed up the 2.7 s BCH stage.
+   decode.  **[capture<->decode done 2026-10-16]** — `LiveReceiver.run_pipelined`
+   (bounded queue + capture thread); network-layer overlap still open.
+4. Speed up the 2.7 s BCH stage.  **[done 2026-10-16]** — vectorized the
+   received-vector build; BCH 10.3 -> 5.12 ms/block.
 
 These are mandatory regardless of hardware; the GPU only removes the FEC wall.
 

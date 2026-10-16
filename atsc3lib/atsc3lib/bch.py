@@ -292,8 +292,7 @@ class BCHCode:
         Returns:
             (corrected_message_bits, num_errors_corrected, success)
         """
-        rx_arr = np.asarray([int(b) & 1 for b in received_bits],
-                            dtype=np.uint8)
+        rx_arr = np.asarray(received_bits, dtype=np.uint8) & 1
         kpayload = len(rx_arr) - self.mouter
         if kpayload <= 0:
             raise ValueError("Received vector shorter than BCH parity")
