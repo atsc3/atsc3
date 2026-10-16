@@ -157,3 +157,121 @@ class TestDataPlpChain:
                             nti=meta['nti'], n_fec=meta['n_fec'],
                             cell_interleaver=0)
         assert r.n_converged < meta['n_fec']
+
+
+class TestLdpcFastPath:
+    """A1/A2: the capped first look and the chance-level ladder skip.
+
+    A/322 6.1.3 LDPC: the fast path runs the primary alpha with a small cap and
+    only falls through to the full normalized-min-sum ladder when the capped
+    hard decision is neither converged nor at the chance level of a random
+    decision.  It must not change the decoded payload.
+    """
+
+    @staticmethod
+    def _clean_block(rate, mod, ninner, seed=20261006):
+        from atsc3lib.ldpc_exact import ATSC3LDPCExact
+        from atsc3lib.group_interleaver import GroupInterleaver
+        from atsc3lib.bch import BCHCode
+        rng = np.random.default_rng(seed)
+        chain = DataPlpChain(mod=mod, rate=rate, ninner=ninner)
+        ldpc = ATSC3LDPCExact(rate, n=ninner)
+        bch = BCHCode(ninner, chain.bch.t)
+        kpayload = ldpc.K - bch.mouter
+        msg = rng.integers(0, 2, kpayload).astype(np.uint8)
+        info = np.asarray(bch.encode(list(msg)), dtype=np.uint8)
+        cw = ldpc.encode(info)
+        order = np.asarray(GroupInterleaver(rate, mod, n=ninner).order)
+        bits = cw[order]
+        nb = nuc.MODULATION_BITS[mod]
+        labels = bits.reshape(-1, nb)
+        idx = np.zeros(len(labels), dtype=int)
+        for i in range(nb):
+            idx = (idx << 1) | labels[:, i].astype(int)
+        cells = nuc.points(nb, rate)[idx]
+        return chain, cells
+
+    @staticmethod
+    def _ladder_payload(chain, cells):
+        """The pre-A1 path: demap once, then the full alpha ladder."""
+        from atsc3lib.signaling_fec import scramble_bits
+        cells = np.asarray(cells, dtype=np.complex128)
+        power = float(np.mean(np.abs(cells) ** 2))
+        if power > 0.0:
+            cells = cells / np.sqrt(power)
+        q = nuc.demap_llr(cells, chain.mod_bits, chain.rate)
+        llr = np.empty(chain.ninner)
+        llr[chain.order] = -q
+        bits, converged = chain.ldpc.decode(llr, alpha=chain.ALPHA_LADDER[0])
+        for a in chain.ALPHA_LADDER[1:]:
+            if converged:
+                break
+            bits, converged = chain.ldpc.decode(llr, alpha=a)
+        assert converged
+        payload_bits, _nerr, bch_ok = chain.bch.decode(bits[:chain.Kldpc])
+        assert bch_ok
+        return scramble_bits(
+            np.asarray(payload_bits, dtype=np.uint8)[:chain.kpayload])
+
+    @pytest.mark.parametrize("rate,mod", [(11, '256QAM'), (11, '64QAM')])
+    def test_fast_path_matches_full_ladder(self, rate, mod):
+        chain, cells = self._clean_block(rate, mod, 64800)
+        expected = self._ladder_payload(chain, cells)
+        calls = []
+        real = chain.ldpc.decode
+
+        def counting(llrs, *a, **k):
+            calls.append(k.get('max_iterations'))
+            return real(llrs, *a, **k)
+
+        chain.ldpc.decode = counting
+        r = chain.decode_cells(cells)
+        assert r.converged and r.bch_ok
+        assert np.array_equal(np.asarray(r.payload_bits), expected)
+        assert len(calls) == 1               # the clean fast look is enough
+
+    @pytest.mark.parametrize("rate,mod", [(11, '256QAM'), (11, '64QAM')])
+    def test_fallback_runs_full_ladder_when_capped_look_fails(self, rate, mod):
+        # Force the capped look to report failure while the block stays below
+        # the chance level (the true syndrome is zero), so A2 must not skip and
+        # the full ladder must run and recover the same payload.
+        chain, cells = self._clean_block(rate, mod, 64800)
+        expected = self._ladder_payload(chain, cells)
+        real = chain.ldpc.decode
+        state = {"first": True}
+        calls = []
+
+        def first_fails(llrs, *a, **k):
+            calls.append(k.get('max_iterations'))
+            bits, conv = real(llrs, *a, **k)
+            if state["first"]:
+                state["first"] = False
+                return bits, False
+            return bits, conv
+
+        chain.ldpc.decode = first_fails
+        r = chain.decode_cells(cells)
+        assert r.converged and r.bch_ok
+        assert np.array_equal(np.asarray(r.payload_bits), expected)
+        assert len(calls) >= 2               # the ladder was entered
+
+    def test_chance_level_block_is_skipped(self):
+        # A random constellation point per cell leaves the syndrome at the ~1/2
+        # chance level; A2 skips the ladder and reports non-convergence.
+        chain = DataPlpChain(mod='256QAM', rate=11, ninner=64800)
+        rng = np.random.default_rng(99)
+        cells = nuc.points(8, 11)[rng.integers(0, 256, 8100)]
+        calls = []
+        real = chain.ldpc.decode
+
+        def counting(llrs, *a, **k):
+            calls.append(k.get('max_iterations'))
+            return real(llrs, *a, **k)
+
+        chain.ldpc.decode = counting
+        r = chain.decode_cells(cells)
+        assert not r.converged
+        assert r.packet is None
+        assert len(calls) == 1               # the ladder was skipped
+
+

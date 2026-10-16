@@ -5,6 +5,47 @@ RF33 subframe-1 PLP-1 fixture (`tests/data/rf33_sf1_y.npy`, 256QAM 11/15,
 64800-bit LDPC, 117 FEC blocks). See also `wiki/analyses/gpu-and-algo-speedups.md`
 and `wiki/analyses/subframe1-plp1.md`.
 
+## Status (2026-10-16): Tracks A and B implemented
+
+A1/A2/A3, B1–B5 are done. All changes are bit-identical: the demapper
+differentials, the new Track-A gates, the subframe-1 pool bit-identity gate and
+the air gate (`test_subframe1.py::TestSf1Air::test_plp1_decodes`, 117/117) all
+pass; suite 773 passed. `tests/bindings/test_demod_demap_ref.py` now compares
+the C demapper against the true NumPy reference `nuc._demap_llr_numpy` (the old
+version compared the C kernel to itself through `nuc.demap_llr`).
+
+Measured with `python -m tools.bench_decode --workers 1,2,4` on the same host,
+before/after (best-of repeats):
+
+| Stage | Before | After | Note |
+|---|---|---|---|
+| Pool build (75x16K FFT + dense CH) | 0.883 s | **0.681 s** | B3 carrier cache (-23%) |
+| Demap / FEC block | 55.2 ms | **32.6 ms** | B1 fused passes (-41%) |
+| LDPC / FEC block | 57.1 ms | 56.6 ms | unchanged (A does not move a clean signal) |
+| BCH / FEC block | 10.3 ms | 10.8 ms | unchanged |
+| FEC serial total | 14.34 s | **11.69 s** | |
+| Whole frame @1 worker | 16.00 s | **13.87 s** | |
+| Whole frame @2 workers | 9.29 s | **7.30 s** | |
+| Whole frame @4 workers | 7.35 s | **6.02 s** | |
+
+B4 (`-O3`) is in `setup.py`. B5 reports the split; numbers are above, not a
+timing-dependent pytest. A1/A2 do not change the clean-signal whole-frame time
+(the fast look converges on the first alpha and A2 never triggers on air); they
+remove the wasted ladder retries on marginal links. Track B still does not
+reach the 247 ms frame budget — see the follow-on section.
+
+A3 (`_fec_workers`) is left at `os.cpu_count()`; the receive-chain default is
+correct and no physical-core override was added (the FEC kernels release the
+GIL and the block count gives ample parallelism).
+
+B2 adds an optional `block` argument to `_demap.demap_llr` /
+`atsc3lib._bindings.demod.demap_llr` that resets the `sigma2` accumulator every
+N cells, so one call over concatenated FEC blocks reproduces the per-block
+scale exactly (gated by `test_block_scale_matches_separate_calls`). The receive
+chain still calls the demapper once per FEC block inside the thread pool —
+wiring it to one per-subframe call would serialise the demap and lose its
+parallelism, so it is deliberately not the hot path.
+
 ## Baseline (measured, 2-core/4-thread i5-4278U)
 
 | Stage | Serial (1 worker) | Per block |
@@ -22,7 +63,7 @@ and `wiki/analyses/subframe1-plp1.md`.
 All 117 blocks converge on the first alpha pass; the `ALPHA_LADDER` never
 re-runs on a clean signal.
 
-## Track A — LDPC fast path (marginal links; output-identical)
+## Track A — LDPC fast path (marginal links; output-identical) — done
 
 Target: `DataPlpChain.decode_cells` (`payload.py:567-598`). ~0% on a clean
 signal; large win per failed block on marginal links (up to 3x100 iterations
@@ -41,7 +82,7 @@ re-run per alpha otherwise).
   `FAST_ITERATIONS` recovers via fallback; chance-level block is skipped and
   reported non-converged.
 
-## Track B — Demapper + pool speed-ups (clean-signal bottleneck)
+## Track B — Demapper + pool speed-ups (clean-signal bottleneck) — done
 
 - B1. Fuse `_demap.c`'s two distance passes (pass 1 currently only computes
   sigma^2, line 96-111; pass 2 recomputes distances, line 118-144): update

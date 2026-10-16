@@ -343,11 +343,46 @@ def data_symbol_cells(symbol: np.ndarray, fft_size: int, noc: int,
                            pilot_coherence=coh, n_carriers=noc)
 
 
+def symbol_carriers(y: np.ndarray, t0: int, fft_size: int,
+                    guard_interval: int, noc: int,
+                    n_data_symbols: int) -> np.ndarray:
+    """Relative-carrier spectra of every data symbol of a subframe.
+
+    A/322 8.1.3.1: the dense channel estimate (:func:`dense_symbol_channel`)
+    needs the ``DY`` scattered-pilot subsets of ``DY`` consecutive symbols, so
+    the naive loop re-transforms each symbol body ``DY`` times.  One batched FFT
+    over all bodies yields the identical spectra — pocketfft transforms each row
+    independently, so the result is bit-for-bit the same as a per-symbol
+    :func:`_relative_carriers` (gated in ``tests/test_subframe1.py``) — and each
+    symbol is touched once.
+
+    Args:
+        y: Main-rate IQ starting at the bootstrap (sample 0).
+        t0: Sample index of this subframe's first symbol (guard interval start).
+        fft_size, guard_interval, noc: Subframe geometry.
+        n_data_symbols: Symbols in the subframe (data + subframe boundary).
+
+    Returns:
+        ``(n_data_symbols, noc)`` complex128 spectra in relative-carrier order.
+    """
+    n = int(n_data_symbols)
+    if n <= 0:
+        return np.zeros((0, noc), dtype=np.complex128)
+    stride = fft_size + guard_interval
+    idx = (np.arange(n)[:, None] * stride + guard_interval
+           + np.arange(fft_size)[None, :])
+    body = np.asarray(y)[idx].astype(np.complex128)
+    spectrum = np.fft.fftshift(np.fft.fft(body, axis=1), axes=1)
+    origin = (spec.NOC_MAX[fft_size] - noc) // 2
+    shift = fft_size // 2 + (origin - (spec.NOC_MAX[fft_size] - 1) // 2)
+    return np.ascontiguousarray(spectrum[:, shift:shift + noc])
+
+
 def dense_symbol_channel(y: np.ndarray, t0: int, fft_size: int,
                          guard_interval: int, noc: int, dx: int, dy: int,
                          l: int, n_data_symbols: int, sbs_symbols: tuple,
-                         cp_rel: np.ndarray, add_cp=(), amplitude: float = 1.0
-                         ) -> np.ndarray:
+                         cp_rel: np.ndarray, add_cp=(), amplitude: float = 1.0,
+                         carriers_all: np.ndarray = None) -> np.ndarray:
     """Dense frequency-domain channel estimate for one data symbol.
 
     A/322 8.1.3.1 scatters the pilots at ``k mod (DX*DY) == DX*(l mod DY)``,
@@ -362,6 +397,9 @@ def dense_symbol_channel(y: np.ndarray, t0: int, fft_size: int,
     A/322 8.1.3.1).  This is what lifts RF33 subframe-1 PLP-1 (256QAM) from a
     multipath-limited 0/117 to 117/117; the single-symbol estimate leaves a
     residual that nearest-point MER under-reports.
+
+    ``carriers_all`` may supply a precomputed
+    :func:`symbol_carriers` cache so the per-symbol FFTs are not repeated.
     """
     ref = reference_sequence(noc).astype(np.int64)
     cpedge = np.unique(np.concatenate([
@@ -371,6 +409,8 @@ def dense_symbol_channel(y: np.ndarray, t0: int, fft_size: int,
     sbs_set = tuple(sbs_symbols)
 
     def carriers_at(lj: int) -> np.ndarray:
+        if carriers_all is not None:
+            return carriers_all[lj]
         start = t0 + (fft_size + guard_interval) * lj + guard_interval
         return _relative_carriers(
             y[start:start + fft_size].astype(np.complex128), fft_size, noc)
@@ -541,6 +581,20 @@ class DataPlpChain:
     #: codes' check degrees and is the fallback; 1.0/0.85 are tried first.
     ALPHA_LADDER = (1.0, 0.85, 0.75)
 
+    #: First-look iteration cap (A1).  A clean block converges far below the
+    #: full limit, so trying the primary alpha with a small cap and falling back
+    #: to the full ladder only on failure is output-identical while skipping the
+    #: wasted iterations on the common path.
+    FAST_ITERATIONS = 16
+
+    #: Ladder-skip threshold (A2).  Under a random hard decision a parity check
+    #: is satisfied with probability ~1/2, so a block with more than this
+    #: fraction of checks unsatisfied is at the chance level, i.e. far from any
+    #: codeword, and the normalized-min-sum alpha ladder does not rescue it; the
+    #: remaining retries are skipped.  The value sits just below the 1/2 chance
+    #: level so that a block the ladder could still recover is never discarded.
+    LADDER_SKIP_UNSATISFIED = 0.45
+
     def __init__(self, mod: str = QPSK, rate: int = RATE_MIN,
                  ninner: int = NINNER_SHORT, max_iterations: int = 100):
         if ninner not in (NINNER_SHORT, NINNER_NORMAL):
@@ -580,11 +634,23 @@ class DataPlpChain:
         llr = np.empty(self.ninner)
         llr[self.order] = -q                                 # decoder: >0 => bit 1
         ladder = (alpha,) if alpha is not None else self.ALPHA_LADDER
-        bits, converged = self.ldpc.decode(llr, alpha=ladder[0])
-        for a in ladder[1:]:
-            if converged:
-                break
-            bits, converged = self.ldpc.decode(llr, alpha=a)
+        # A1: first look at the primary alpha with a small cap; a clean block
+        # converges here, so the full ladder is never entered.
+        fast = min(self.ldpc.max_iterations, self.FAST_ITERATIONS)
+        bits, converged = self.ldpc.decode(llr, max_iterations=fast,
+                                           alpha=ladder[0])
+        if not converged:
+            # A2: only pay for the ladder when the capped decision is not already
+            # at the chance level of a random hard decision.
+            if (self.ldpc.n_unsatisfied()
+                    > self.LADDER_SKIP_UNSATISFIED * self.ldpc.M):
+                return FecBlock(bits=bits, converged=False, bch_ok=False,
+                                bch_syndrome=-1, payload_bits=None, packet=None)
+            bits, converged = self.ldpc.decode(llr, alpha=ladder[0])
+            for a in ladder[1:]:
+                if converged:
+                    break
+                bits, converged = self.ldpc.decode(llr, alpha=a)
         if not converged:
             return FecBlock(bits=bits, converged=False, bch_ok=False,
                             bch_syndrome=-1, payload_bits=None, packet=None)
@@ -689,6 +755,8 @@ def build_data_symbol_pool(y: np.ndarray, t0: int, fft_size: int,
         t0 = t0 + fine.offset
 
     cp_rel = common_cp_relative(noc, fft_size)
+    carriers_all = (symbol_carriers(y, t0, fft_size, guard_interval, noc,
+                                    n_data_symbols) if dense else None)
     parts, owner = [], []
     for l in range(n_data_symbols):
         sbs = l in tuple(sbs_symbols)
@@ -696,9 +764,9 @@ def build_data_symbol_pool(y: np.ndarray, t0: int, fft_size: int,
         if dense:
             channel = dense_symbol_channel(
                 y, t0, fft_size, guard_interval, noc, dx, dy, l,
-                n_data_symbols, tuple(sbs_symbols), cp_rel, add_cp=add_cp)
-            carriers = _relative_carriers(
-                y[start:start + fft_size].astype(np.complex128), fft_size, noc)
+                n_data_symbols, tuple(sbs_symbols), cp_rel, add_cp=add_cp,
+                carriers_all=carriers_all)
+            carriers = carriers_all[l]
             pilots = _pilots(noc, dx, dy, l, sbs, cp_rel, add_cp)
             data_mask = np.ones(noc, dtype=bool)
             data_mask[pilots] = False

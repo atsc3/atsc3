@@ -25,6 +25,9 @@ def _kernel(name):
         "atsc3lib._bindings." + name,
         sources=[str(_BINDINGS / (name + ".c"))],
         include_dirs=[numpy.get_include()],
+        # -O3 only: no -march=native and no -ffast-math, which would reassociate
+        # floating point and break the bit-identity the differential tests gate.
+        extra_compile_args=["-O3"],
     )
 
 

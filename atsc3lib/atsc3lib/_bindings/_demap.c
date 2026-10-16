@@ -29,12 +29,14 @@
 static PyObject *demap_llr(PyObject *self, PyObject *args, PyObject *kwds)
 {
     (void)self;
-    static char *kwlist[] = {"cells", "points", "mod_order", NULL};
+    static char *kwlist[] = {"cells", "points", "mod_order", "block", NULL};
     PyObject *cells_o, *points_o;
     int mod_order;
+    int block = 0;
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "OOi", kwlist,
-                                     &cells_o, &points_o, &mod_order)) {
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "OOi|i", kwlist,
+                                     &cells_o, &points_o, &mod_order,
+                                     &block)) {
         return NULL;
     }
     if (mod_order < 1 || mod_order > 16) {
@@ -71,16 +73,26 @@ static PyObject *demap_llr(PyObject *self, PyObject *args, PyObject *kwds)
     const npy_complex128 *z = (const npy_complex128 *)PyArray_DATA(cells);
     const npy_complex128 *p = (const npy_complex128 *)PyArray_DATA(pts);
 
-    double *d2 = malloc((size_t)m * sizeof(double));
+    /* Scratch: the per-bit minima are kept per cell so the LLRs can be divided
+     * by sigma2 after the whole block has been seen.  The old two-pass form
+     * recomputed every distance to get sigma2; the first pass below does both
+     * jobs at once.  ``block`` (0 = whole array) resets the sigma2 accumulator
+     * every ``block`` cells, so one call over many concatenated FEC blocks
+     * reproduces the per-block scale of separate calls. */
+    const npy_intp blk = (block > 0 && (npy_intp)block < n) ? (npy_intp)block : n;
+    const npy_intp nblk = (n + blk - 1) / blk;
     double *min1 = malloc((size_t)mod_order * sizeof(double));
     double *min0 = malloc((size_t)mod_order * sizeof(double));
+    double *diff = malloc((size_t)n * (size_t)mod_order * sizeof(double));
+    double *sig = malloc((size_t)nblk * sizeof(double));
     npy_intp dims[1] = {n * mod_order};
     PyArrayObject *out = (PyArrayObject *)PyArray_SimpleNew(1, dims,
                                                             NPY_FLOAT64);
-    if (!d2 || !min1 || !min0 || out == NULL) {
-        free(d2);
+    if (!min1 || !min0 || !diff || !sig || out == NULL) {
         free(min1);
         free(min0);
+        free(diff);
+        free(sig);
         Py_XDECREF(out);
         Py_DECREF(cells);
         Py_DECREF(pts);
@@ -91,30 +103,13 @@ static PyObject *demap_llr(PyObject *self, PyObject *args, PyObject *kwds)
     /* Only read-only inputs and private scratch are touched, so release the
      * GIL: demapping a frame's blocks can run across a thread pool. */
     Py_BEGIN_ALLOW_THREADS
-    /* First pass: sigma2 = max(mean_i min_j |z_i-p_j|^2, 1e-9). */
+    /* Single distance pass: per-cell per-bit minima plus the running sum of the
+     * nearest-point distance (sigma2 = max(mean_i min_j |z_i-p_j|^2, 1e-9)).
+     * ``best`` is the min over every point, which equals the min over the bits
+     * of min(min1, min0) because for each bit the two label sets partition the
+     * constellation; the selection is exact, so the value is bit-identical to
+     * the reference's np.abs(z-p)**2 min. */
     double sum_min = 0.0;
-    for (npy_intp i = 0; i < n; i++) {
-        double re = creal(z[i]), im = cimag(z[i]);
-        double best = INFINITY;
-        for (npy_intp j = 0; j < m; j++) {
-            double dr = re - creal(p[j]);
-            double di = im - cimag(p[j]);
-            /* Squared distance without sqrt: the reference's np.abs(z-p)**2
-             * has the same ordering, so the min is identical and the value
-             * agrees to a ulp (the LLR is scale-consistent either way). */
-            double d = dr * dr + di * di;
-            if (d < best) {
-                best = d;
-            }
-        }
-        sum_min += best;
-    }
-    double sigma2 = sum_min / (double)n;
-    if (sigma2 < 1e-9) {
-        sigma2 = 1e-9;
-    }
-
-    /* Second pass: per-bit max-log LLRs. */
     for (npy_intp i = 0; i < n; i++) {
         double re = creal(z[i]), im = cimag(z[i]);
         for (int b = 0; b < mod_order; b++) {
@@ -138,15 +133,39 @@ static PyObject *demap_llr(PyObject *self, PyObject *args, PyObject *kwds)
                 }
             }
         }
+        double best = INFINITY;
         for (int b = 0; b < mod_order; b++) {
-            llr[i * mod_order + b] = (min1[b] - min0[b]) / sigma2;
+            if (min1[b] < best) {
+                best = min1[b];
+            }
+            if (min0[b] < best) {
+                best = min0[b];
+            }
+            diff[i * mod_order + b] = min1[b] - min0[b];
         }
+        sum_min += best;
+        /* Close out this block's scale at its last cell (and at the end). */
+        if ((i + 1) % blk == 0 || i == n - 1) {
+            const npy_intp cnt = (i % blk) + 1;
+            const double s = sum_min / (double)cnt;
+            sig[i / blk] = (s < 1e-9) ? 1e-9 : s;
+            sum_min = 0.0;
+        }
+    }
+
+    /* Second loop: apply each block's own scale; no distances recomputed.
+     * Output index o = cell*mod_order + b, so o/(blk*mod_order) is the cell's
+     * block index. */
+    const npy_intp nout = n * mod_order;
+    for (npy_intp i = 0; i < nout; i++) {
+        llr[i] = diff[i] / sig[i / (blk * mod_order)];
     }
     Py_END_ALLOW_THREADS
 
-    free(d2);
     free(min1);
     free(min0);
+    free(diff);
+    free(sig);
     Py_DECREF(cells);
     Py_DECREF(pts);
     return (PyObject *)out;
@@ -155,7 +174,7 @@ static PyObject *demap_llr(PyObject *self, PyObject *args, PyObject *kwds)
 static PyMethodDef methods[] = {
     {"demap_llr", (PyCFunction)(void (*)(void))demap_llr,
      METH_VARARGS | METH_KEYWORDS,
-     "Max-log NUC/QAM LLRs (A/322 6.3.3)."},
+     "Max-log NUC/QAM LLRs (A/322 6.3.3); block resets sigma2 per N cells."},
     {NULL, NULL, 0, NULL}
 };
 

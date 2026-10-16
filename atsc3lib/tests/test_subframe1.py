@@ -20,7 +20,7 @@ import pytest
 from atsc3lib import pilot_tables, spec
 from atsc3lib.payload import (
     build_data_symbol_pool, data_symbol_cells, dense_symbol_channel,
-    common_cp_relative, _relative_carriers,
+    symbol_carriers, common_cp_relative, _relative_carriers,
 )
 from atsc3lib.pilot_reference import reference_sequence
 
@@ -141,6 +141,54 @@ class TestDenseChannel:
         corrd = np.abs(np.vdot(hd, H)) / np.sqrt(
             np.vdot(hd, hd).real * np.vdot(H, H).real)
         assert corrd > corr1
+
+    def test_symbol_carriers_match_per_symbol_fft(self):
+        # The batched FFT of the cached path must be bit-for-bit the per-symbol
+        # _relative_carriers it replaces.
+        y, _H, (fft, gi, noc, _dx, _dy, _cp, _add) = self._symbols(n_sym=8)
+        cache = symbol_carriers(y, 0, fft, gi, noc, 8)
+        assert cache.shape == (8, noc)
+        for l in range(8):
+            start = (fft + gi) * l + gi
+            row = _relative_carriers(y[start:start + fft].astype(np.complex128),
+                                      fft, noc)
+            assert np.array_equal(cache[l], row)
+
+    def test_cached_channel_estimate_is_identical(self):
+        # Passing the carrier cache must not change the dense channel estimate.
+        y, _H, (fft, gi, noc, dx, dy, cp, add) = self._symbols(n_sym=8)
+        cache = symbol_carriers(y, 0, fft, gi, noc, 8)
+        for l in range(8):
+            plain = dense_symbol_channel(y, 0, fft, gi, noc, dx, dy, l, 8, (),
+                                          cp, add_cp=add)
+            cached = dense_symbol_channel(y, 0, fft, gi, noc, dx, dy, l, 8, (),
+                                           cp, add_cp=add, carriers_all=cache)
+            assert np.array_equal(plain, cached)
+
+    def test_cached_pool_is_bit_identical(self, monkeypatch):
+        # End to end: the pool built with the carrier cache equals the pool built
+        # when dense_symbol_channel is forced back to its per-symbol FFTs.
+        import atsc3lib.payload as pl
+        y, _H, (fft, gi, noc, dx, dy, _cp, _add) = self._symbols(n_sym=8)
+        kwargs = dict(fft_size=fft, guard_interval=gi, noc=noc, dx=dx, dy=dy,
+                      n_data_symbols=8, sbs_symbols=(), pattern='SP4_4',
+                      cred_coeff=0, dense=True)
+        # The 8-symbol synthetic subframe has no trailing neighbours for its
+        # last symbols, so the dense grid has uncovered points (the real 75-
+        # symbol frame does not); that divide is harmless here and both paths
+        # see it identically.
+        with np.errstate(divide='ignore', invalid='ignore'):
+            cached = build_data_symbol_pool(y, 0, **kwargs)
+            orig = pl.dense_symbol_channel
+
+            def uncached(*a, **k):
+                k.pop('carriers_all', None)
+                return orig(*a, **k)
+
+            monkeypatch.setattr(pl, 'dense_symbol_channel', uncached)
+            plain = build_data_symbol_pool(y, 0, **kwargs)
+        assert np.array_equal(cached.cells, plain.cells)
+        assert np.array_equal(cached.symbol_of, plain.symbol_of)
 
 
 @pytest.mark.skipif(not (os.path.exists(_SF1) and os.path.exists(_META)),
