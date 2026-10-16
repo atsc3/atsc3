@@ -202,6 +202,44 @@ class TestLiveLockPersistence:
         with pytest.raises(ValueError):
             receiver.run_pipelined(max_windows=1, queue_depth=0)
 
+    def test_config_rejects_bad_network_queue(self):
+        with pytest.raises(ValueError):
+            LiveConfig(network_queue=0)
+
+    @pytest.mark.skipif(not os.path.exists(_LOCK),
+                        reason="real lock-persistence capture not present")
+    def test_async_network_matches_synchronous(self):
+        # Running the ALP/IP/LLS stage on its own worker must give the same
+        # decode as doing it inline.
+        def cfg():
+            return LiveConfig(plp_id=16, max_frames=1, acquire_window_s=0.10)
+
+        sync = LiveReceiver(FileIqSource(_LOCK, 10e6, "cs8"), cfg())
+        for _ in range(10):
+            if not sync.run_once():
+                break
+        pipe = LiveReceiver(FileIqSource(_LOCK, 10e6, "cs8"), cfg())
+        pipe.run_pipelined(max_windows=10, queue_depth=2, network_async=True)
+        assert pipe.stats == sync.stats
+        assert len(pipe.streams) == len(sync.streams)
+
+    @pytest.mark.skipif(not os.path.exists(_LOCK),
+                        reason="real lock-persistence capture not present")
+    def test_async_network_reports_worker_failure(self, monkeypatch):
+        # A failure in the network worker must surface on close, not vanish.
+        from atsc3lib import live as live_mod
+
+        def boom(_payload):
+            raise RuntimeError("network stage failed")
+
+        monkeypatch.setattr(live_mod, "decode_streams", boom)
+        receiver = LiveReceiver(
+            FileIqSource(_LOCK, 10e6, "cs8"),
+            LiveConfig(plp_id=16, max_frames=1, acquire_window_s=0.10))
+        with pytest.raises(RuntimeError, match="network stage failed"):
+            receiver.run_pipelined(max_windows=10, queue_depth=2,
+                                   network_async=True)
+
     @pytest.mark.skipif(not os.path.exists(_LOCK),
                         reason="real lock-persistence capture not present")
     def test_config_change_triggers_relock(self, monkeypatch):

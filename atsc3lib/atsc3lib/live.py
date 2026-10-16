@@ -189,6 +189,9 @@ class LiveConfig:
     #: frames also drops the lock.
     relock_every: int = 8
     relock_after_failures: int = 3
+    #: Bounded depth of the ALP/IP/LLS pipeline queue when the network stage runs
+    #: off the decode thread (:meth:`LiveReceiver.run_pipelined`).
+    network_queue: int = 8
 
     def __post_init__(self):
         # Bounds must be finite; a non-positive value would mean "unbounded".
@@ -196,6 +199,8 @@ class LiveConfig:
             raise ValueError("live bounds must be >= 1")
         if self.relock_every < 1 or self.relock_after_failures < 1:
             raise ValueError("relock bounds must be >= 1")
+        if self.network_queue < 1:
+            raise ValueError("network_queue must be >= 1")
         if not (spec.MIN_FRAME_LENGTH_S <= self.acquire_window_s
                 <= spec.MAX_FRAME_LENGTH_S * DEFAULT_MAX_WINDOWS):
             raise ValueError("acquire_window_s out of the spec frame range")
@@ -236,6 +241,58 @@ def _config_fingerprint(result) -> tuple:
                      g.get('fi_offset'), g.get('fi_enabled'),
                      g.get('n_preamble_symbols'), plps))
     return (result.preamble_structure, tuple(subs))
+
+
+class _NetworkStage:
+    """Run the Baseband Packet -> ALP/IP/LLS stage off the decode thread.
+
+    A single worker drains a **bounded** queue in frame order, so a slow network
+    or media consumer back-pressures the decoder (never an unbounded buffer) and
+    the link/network work of frame N overlaps the FEC of frame N+1.  This is the
+    one documented thread boundary: it captures any failure and re-raises it on
+    :meth:`close` rather than losing it in a dead thread.
+    """
+
+    def __init__(self, on_streams, sink: list, maxsize: int = 8):
+        import queue as _queue
+        import threading
+        self._q: "_queue.Queue" = _queue.Queue(maxsize=maxsize)
+        self._on = on_streams
+        self._sink = sink
+        self._n_streams = 0
+        self._error = None
+        self._thread = threading.Thread(target=self._run, name="atsc3-network",
+                                        daemon=True)
+        self._thread.start()
+
+    def submit(self, payload) -> None:
+        self._q.put(payload)          # blocks when full: back-pressure, bounded
+
+    def _run(self):
+        while True:
+            payload = self._q.get()
+            if payload is None:
+                break
+            try:
+                streams = decode_streams(payload)
+            except Exception as exc:  # noqa: BLE001 - re-raised on close()
+                self._error = exc
+                continue
+            self._n_streams += 1
+            if self._on is not None:
+                self._on(streams)
+            else:
+                self._sink.append(streams)
+
+    def close(self) -> None:
+        self._q.put(None)
+        self._thread.join()
+        if self._error is not None:
+            raise self._error
+
+    @property
+    def n_streams(self) -> int:
+        return self._n_streams
 
 
 @dataclass
@@ -280,6 +337,7 @@ class LiveReceiver:
         self.result = None
         self._structure = None
         self._lock: Optional[_Lock] = None
+        self._network: Optional[_NetworkStage] = None
         self._exhausted = False
 
     def _derotate(self, x: np.ndarray, cfo: float, base_index: int) -> np.ndarray:
@@ -337,6 +395,12 @@ class LiveReceiver:
 
     def _emit(self, payload) -> None:
         self.stats.payloads += 1
+        if self._network is not None:
+            self._network.submit(payload)     # async: overlaps the next FEC
+            return
+        self._emit_sync(payload)
+
+    def _emit_sync(self, payload) -> None:
         streams = decode_streams(payload)
         self.stats.streams += 1
         if self.on_streams is not None:
@@ -419,15 +483,17 @@ class LiveReceiver:
             self.stats.relocks += 1
         return True
 
-    def run_pipelined(self, max_windows: int = None,
-                      queue_depth: int = 2) -> LiveStats:
-        """Continuous reception with capture overlapped against decode.
+    def run_pipelined(self, max_windows: int = None, queue_depth: int = 2,
+                      network_async: bool = False) -> LiveStats:
+        """Continuous reception with capture and network overlapped on decode.
 
         A capture thread reads windows into a **bounded** queue while this
         thread runs the lock/decode state machine, so the next window's SDR read
-        overlaps the current window's decode.  Bounded by ``max_windows`` (and
-        the queue depth), so it never reads or buffers without a limit.  The
-        synchronous :meth:`run_once` path is unchanged.
+        overlaps the current window's decode.  With ``network_async`` the
+        Baseband Packet -> ALP/IP/LLS stage runs on its own bounded worker too,
+        overlapping frame N's network work with frame N+1's FEC.  Bounded by
+        ``max_windows`` and the two queue depths, so it never reads or buffers
+        without a limit.  The synchronous :meth:`run_once` path is unchanged.
         """
         import queue as _queue
         import threading
@@ -440,6 +506,9 @@ class LiveReceiver:
                              * self.source.sample_rate)
         q: "_queue.Queue" = _queue.Queue(maxsize=queue_depth)
         stop = threading.Event()
+        if network_async:
+            self._network = _NetworkStage(self.on_streams, self.streams,
+                                          maxsize=self.config.network_queue)
 
         def producer():
             sent = 0
@@ -464,6 +533,10 @@ class LiveReceiver:
         finally:
             stop.set()
             thread.join()
+            if self._network is not None:
+                self._network.close()
+                self.stats.streams += self._network.n_streams
+                self._network = None
         return self.stats
 
     def _relock_if_changed(self, window: np.ndarray) -> bool:

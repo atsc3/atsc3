@@ -152,12 +152,14 @@ Broader throughput discussion.  Status of the mandatory serial-floor fixes:
   with a Python list comprehension over ~47k bits per block; it now uses a NumPy
   cast-and-mask.  BCH 10.3 -> **5.12 ms/block** (-50%), bit-identical
   (`test_bch.py`, `test_fec_bch_c.py`).
-- **Pipeline capture<->FEC<->network (done for capture<->decode).**
+- **Pipeline capture<->FEC<->network (done).**
   `LiveReceiver.run_pipelined` reads windows on a capture thread into a bounded
-  queue while the lock/decode state machine runs on the caller's thread; the
-  synchronous `run_once` path is unchanged and the pipelined runner is gated to
-  produce identical stats (`test_live.py`).  Network-layer overlap (draining the
-  ALP/IP/LLS stage off the FEC thread) remains.
+  queue while the lock/decode state machine runs on the caller's thread; with
+  `network_async=True` the Baseband Packet -> ALP/IP/LLS stage runs on its own
+  bounded worker, so frame N's network work overlaps frame N+1's FEC.  The
+  synchronous `run_once` path is unchanged; both pipelined modes are gated to
+  produce identical stats to the synchronous loop (`test_live.py`).  A worker
+  failure is captured and re-raised on close.
 
 Bench (same host, 256QAM 11/15, 117 blocks, best-of): FEC serial 14.34 -> 11.16 s;
 pool build 0.883 -> 0.223 s; BCH 10.3 -> 5.12 ms/block; whole frame @1/2/4 workers

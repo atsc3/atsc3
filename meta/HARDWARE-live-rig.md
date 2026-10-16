@@ -116,8 +116,9 @@ follow-on):
    cache (B3) + threaded per-symbol loop + cached pilot reference sequence;
    pool build 0.883 -> 0.223 s.
 3. Pipeline capture <-> FEC <-> network, so frame N+1 capture overlaps frame N
-   decode.  **[capture<->decode done 2026-10-16]** — `LiveReceiver.run_pipelined`
-   (bounded queue + capture thread); network-layer overlap still open.
+   decode.  **[done 2026-10-16]** — `LiveReceiver.run_pipelined` (bounded
+   capture queue) with an optional bounded network worker
+   (`network_async=True`) that runs the ALP/IP/LLS stage off the decode thread.
 4. Speed up the 2.7 s BCH stage.  **[done 2026-10-16]** — vectorized the
    received-vector build; BCH 10.3 -> 5.12 ms/block.
 
