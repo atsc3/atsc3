@@ -123,14 +123,26 @@ reach real-time; a cleanup rung, not a live enabler.
 - B2 changes the C API (must stay backward-compatible); B3 is the riskiest.
 - Track A does not move the clean-signal number.
 
-## Follow-on (separate, not part of A/B): sub-second live on 8 cores / GPU
+## Follow-on: sub-second live on 8 cores / GPU
 
-Broader throughput discussion, not yet scoped as tasks:
-- **Prerequisite (mandatory, CPU side): serial-floor fixes.**  With the GPU on
-  FEC the remaining per-frame CPU work is the blocker, not core count: cache
-  `DataPlpChain`/tables/plans once per lock; hold the L1 lock across frames
-  (acquisition re-run is ~14 s/window); pipeline capture<->decode<->network;
-  batch/parallel pool build; speed up the 2.7 s BCH stage.
+Broader throughput discussion.  Status of the mandatory serial-floor fixes:
+
+- **Done (2026-10-16):**
+  - **Cache `DataPlpChain`/tables/plans once per lock** — a bounded per-config
+    cache (`payload.data_plp_chain`) serves `decode_data_plp`/`decode_cti_plp`;
+    `ATSC3LDPCExact` is stateless so the shared chain is thread- and
+    frame-safe.  Removes the per-frame-per-PLP graph build.
+  - **Hold the L1 lock across frames** — `LiveReceiver` now folds each window
+    into a continuous main stream (`frontend.StreamingResampler`) and decodes
+    successive frames without re-running the L1 chain; the chain re-runs only on
+    a bounded schedule or after failed frames, and a changed configuration
+    fingerprint forces a re-lock.  Acquisition (~14 s/window) is paid once per
+    lock.  On the real 8 s capture: 24 windows, 1 acquisition, 29 frames.
+- **Still open:**
+  - Pipeline capture<->FEC<->network (overlap stages).
+  - Batch/parallel the pool build (the 2-D FFT part is done, B3; the per-symbol
+    dense channel loop is still serial).
+  - Speed up the BCH stage.
 - True-live target is < 247 ms/frame (RF33 period); sub-second (< 1 s) is
   near-live and still drops frames.
 - GPU route: raw CUDA extension (`gpubindings`) via `try: import`,

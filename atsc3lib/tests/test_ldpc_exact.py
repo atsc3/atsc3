@@ -108,3 +108,35 @@ class TestDecoder:
         llrs = np.where(cw == 1, 5.0, -5.0)
         out, converged = codec.decode(llrs)
         assert converged and np.array_equal(out, info)
+
+    def test_return_syndrome_is_stateless_and_correct(self):
+        # The syndrome count is derived per call, so the codec keeps no mutable
+        # state; the count must agree with the NumPy reference's independent
+        # evaluation of the same hard decision.
+        codec = ATSC3LDPCExact(2, n=16200, max_iterations=50)
+        rng = np.random.default_rng(11)
+        info = rng.integers(0, 2, codec.K, dtype=np.uint8)
+        cw = codec.encode(info)
+        noisy = (np.where(cw == 1, 1.0, -1.0) * 3.0
+                 + rng.normal(0, 1.0, codec.n)).astype(np.float32)
+
+        out, conv, nsyn = codec.decode(noisy, alpha=0.75,
+                                       return_syndrome=True)
+        ref, conv_np, nsyn_np = codec._decode_numpy(noisy, alpha=0.75,
+                                                    return_syndrome=True)
+        assert conv == conv_np
+        assert np.array_equal(out, ref)
+        assert nsyn == nsyn_np
+        assert isinstance(nsyn, int) and 0 <= nsyn <= codec.M
+        # No attribute is left behind for another thread to read.
+        assert not hasattr(codec, 'last_hard')
+
+    def test_clean_decode_reports_zero_unsatisfied(self):
+        codec = ATSC3LDPCExact(6, n=64800)
+        rng = np.random.default_rng(3)
+        info = rng.integers(0, 2, codec.K, dtype=np.uint8)
+        cw = codec.encode(info)
+        llrs = np.where(cw == 1, 4.0, -4.0).astype(np.float32)
+        out, conv, nsyn = codec.decode(llrs, return_syndrome=True)
+        assert conv and nsyn == 0
+

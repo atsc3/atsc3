@@ -6,8 +6,43 @@ import pytest
 from atsc3lib.bootstrap import generate_bootstrap
 from atsc3lib.frontend import (
     resample_iq, acquire_frame, bootstrap_span_main_rate,
+    StreamingResampler,
     BOOTSTRAP_RATE_HZ, MAIN_RATE_HZ,
 )
+from scipy.signal import upfirdn
+
+
+class TestStreamingResampler:
+    """The live path's phase-exact streaming resampler."""
+
+    def test_matches_whole_stream_upfirdn(self):
+        # Chunked output must equal the single-shot polyphase transform of the
+        # whole input exactly (up to its constant group delay): no per-window
+        # phase restart.
+        rng = np.random.default_rng(0)
+        x = (rng.standard_normal(300000)
+             + 1j * rng.standard_normal(300000)).astype(np.complex128)
+        sr = StreamingResampler(10e6, MAIN_RATE_HZ)
+        out = np.concatenate([sr.feed(x[i:i + 7000])
+                              for i in range(0, x.size, 7000)])
+        whole = upfirdn(sr.h, x, sr.up, sr.down)
+        # The stream emits every output whose input window is fully available;
+        # the single-shot transform also carries the right-edge filter tail.
+        assert out.size == x.size * sr.up // sr.down
+        assert np.array_equal(out, whole[:out.size].astype(np.complex64))
+
+    def test_identity_rate_is_passthrough(self):
+        sr = StreamingResampler(MAIN_RATE_HZ, MAIN_RATE_HZ)
+        x = np.arange(10, dtype=np.complex64)
+        assert np.array_equal(sr.feed(x), x)
+
+    def test_history_is_bounded(self):
+        sr = StreamingResampler(10e6, MAIN_RATE_HZ)
+        x = np.zeros(50000, dtype=np.complex64)
+        for i in range(0, x.size, 5000):
+            sr.feed(x[i:i + 5000])
+        # Buffer never exceeds a phase period plus the latest chunk.
+        assert sr._buf.size <= sr.lcm + 5000
 
 
 class TestResample:

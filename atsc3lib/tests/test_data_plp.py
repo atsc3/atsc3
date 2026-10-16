@@ -243,7 +243,14 @@ class TestLdpcFastPath:
 
         def first_fails(llrs, *a, **k):
             calls.append(k.get('max_iterations'))
-            bits, conv = real(llrs, *a, **k)
+            out = real(llrs, *a, **k)
+            if k.get('return_syndrome'):
+                bits, conv, syn = out
+                if state["first"]:
+                    state["first"] = False
+                    return bits, False, syn
+                return bits, conv, syn
+            bits, conv = out
             if state["first"]:
                 state["first"] = False
                 return bits, False
@@ -273,5 +280,59 @@ class TestLdpcFastPath:
         assert not r.converged
         assert r.packet is None
         assert len(calls) == 1               # the ladder was skipped
+
+
+class TestChainCache:
+    """The per-config ``DataPlpChain`` cache (A3): shared, immutable, keyed."""
+
+    def test_returns_same_instance_per_config(self):
+        from atsc3lib.payload import data_plp_chain
+        a = data_plp_chain('256QAM', 11, 64800, 100)
+        b = data_plp_chain('256QAM', 11, 64800, 100)
+        assert a is b
+        # Any change to the decode configuration is a different chain.
+        assert data_plp_chain('256QAM', 11, 64800, 50) is not a
+        assert data_plp_chain('64QAM', 11, 64800, 100) is not a
+        assert data_plp_chain('256QAM', 11, 16200, 100) is not a
+
+    def test_cached_chain_is_immutable_after_construction(self):
+        from atsc3lib.payload import data_plp_chain
+        chain = data_plp_chain('64QAM', 11, 64800, 100)
+        before = set(vars(chain)) | {'ldpc', 'bch', 'gi'}
+        rng = np.random.default_rng(5)
+        cells = (rng.standard_normal(10800)
+                 + 1j * rng.standard_normal(10800)).astype(np.complex128)
+        chain.decode_cells(cells)
+        # decode_cells adds no instance attributes and the LDPC codec keeps no
+        # per-call state, so the shared chain is safe across threads and frames.
+        assert set(vars(chain)) | {'ldpc', 'bch', 'gi'} == before
+        assert not hasattr(chain.ldpc, 'last_hard')
+
+    @pytest.mark.skipif(not os.path.exists(_HTI_CELLS),
+                        reason="oracle fixture not present")
+    def test_cached_chain_matches_fresh_chain(self):
+        # decode_data_plp now uses the cache; its output must equal a fresh
+        # chain's, block for block.
+        cells = np.load(_HTI_CELLS)
+        meta = json.load(open(_HTI_META))
+        from atsc3lib.payload import decode_data_plp
+        cached = decode_data_plp(cells, meta['mod'], meta['rate'],
+                                 nti=meta['nti'], n_fec=meta['n_fec'])
+        fresh = DataPlpChain(mod=meta['mod'], rate=meta['rate'],
+                             ninner=16200)
+        cpf = fresh.cells_per_fec
+        ncols = meta['n_fec'] // meta['nti']
+        from atsc3lib import twisted_block
+        per_ti = len(cells) // meta['nti']
+        for ti in range(meta['nti']):
+            seg = cells[ti * per_ti:(ti + 1) * per_ti]
+            mem = [twisted_block.fec_block(seg, j, cpf, ncols)
+                   for j in range(ncols)]
+            for j in range(ncols):
+                got = fresh.decode_cells(mem[j])
+                assert np.array_equal(
+                    np.asarray(got.payload_bits),
+                    np.asarray(cached.fec_blocks[ti * ncols + j].payload_bits))
+
 
 

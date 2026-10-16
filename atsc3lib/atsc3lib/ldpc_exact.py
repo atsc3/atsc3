@@ -169,7 +169,6 @@ class ATSC3LDPCExact:
         self.code_type = (FEC_TYPE_A if rate in TYPE_A_PARAMS[n]
                           else FEC_TYPE_B)
         self.max_iterations = max_iterations
-        self.last_hard: Optional[np.ndarray] = None
 
         # Load official table (keyed by rate).
         tables = load_tables(n)
@@ -402,18 +401,20 @@ class ATSC3LDPCExact:
         gathered = hard[self.check_idx] * self.check_mask
         return np.bitwise_xor.reduce(gathered, axis=1)
 
-    def n_unsatisfied(self) -> int:
-        """Unsatisfied check count of the last :meth:`decode` hard decision.
+    def _decoded(self, hard: np.ndarray, converged: bool, return_syndrome: bool):
+        """Shape the decode result, optionally with the unsatisfied-check count.
 
-        A near-zero count on a non-converged block points at the decoder's
-        attenuation constant, not the link (the normalized-min-sum trap).
+        The count is derived from the local hard decision, so no per-decode state
+        is kept on the instance: the codec is immutable after construction and
+        safe to share across worker threads and frames.
         """
-        if self.last_hard is None:
-            return -1
-        return int(self._syndrome_unsatisfied(self.last_hard).sum())
+        if return_syndrome:
+            return (hard[:self.K], converged,
+                    int(self._syndrome_unsatisfied(hard).sum()))
+        return hard[:self.K], converged
 
     def decode(self, llrs: np.ndarray, max_iterations: Optional[int] = None,
-               alpha: float = 0.75) -> Tuple[np.ndarray, bool]:
+               alpha: float = 0.75, return_syndrome: bool = False):
         """Decode with normalized min-sum belief propagation.
 
         Uses the compiled :mod:`atsc3lib._bindings.fec` backend when it is importable
@@ -425,9 +426,13 @@ class ATSC3LDPCExact:
                   LLR > 0 => bit likely 1, LLR < 0 => bit likely 0.
             max_iterations: Override the instance iteration limit.
             alpha: Normalized min-sum scaling factor (0 < alpha <= 1).
+            return_syndrome: Also return the number of unsatisfied parity checks
+                of the hard decision (``(info_bits, converged, n_unsatisfied)``).
+                Computed locally, so the decoder keeps no per-call state.
 
         Returns:
-            (decoded_info_bits, converged)
+            ``(decoded_info_bits, converged)``, plus the unsatisfied-check count
+            when ``return_syndrome``.
         """
         if len(llrs) != self.n:
             raise ValueError(f"Expected {self.n} LLRs, got {len(llrs)}")
@@ -435,12 +440,11 @@ class ATSC3LDPCExact:
                  else self.max_iterations)
         hard, converged = _FEC.decode_ldpc_exact(
             self, llrs, max_iter=iters, alpha=alpha)
-        self.last_hard = hard
-        return hard[:self.K], converged
+        return self._decoded(hard, converged, return_syndrome)
 
     def _decode_numpy(self, llrs: np.ndarray,
                       max_iterations: Optional[int] = None,
-                      alpha: float = 0.75) -> Tuple[np.ndarray, bool]:
+                      alpha: float = 0.75, return_syndrome: bool = False):
         """Vectorized NumPy reference decoder (see :meth:`decode`)."""
         if len(llrs) != self.n:
             raise ValueError(f"Expected {self.n} LLRs, got {len(llrs)}")
@@ -456,7 +460,7 @@ class ATSC3LDPCExact:
 
         hard = (total < 0).astype(np.uint8)
         if self.check_syndrome_bits(hard):
-            return hard[:self.K], True
+            return self._decoded(hard, True, return_syndrome)
 
         n_checks, dmax = self.check_idx.shape
         check_degree = self.check_mask.sum(axis=1)
@@ -506,8 +510,6 @@ class ATSC3LDPCExact:
 
             hard = (total < 0).astype(np.uint8)
             if self.check_syndrome_bits(hard):
-                self.last_hard = hard
-                return hard[:self.K], True
+                return self._decoded(hard, True, return_syndrome)
 
-        self.last_hard = hard
-        return hard[:self.K], False
+        return self._decoded(hard, False, return_syndrome)

@@ -21,10 +21,12 @@ Reference: ATSC A/322:2024-04, Sections 6.2, 6.3, 7.2.6, 8.1.
 """
 
 import os
+import threading
 import xml.etree.ElementTree as ET
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 
@@ -76,6 +78,39 @@ from . import alp
 from . import ip as ip_layer
 from . import slt as slt_mod
 from . import twisted_block
+
+
+#: Bounded cache of data-PLP chains, keyed by the full decode configuration.
+#: A chain is immutable after construction — the LDPC codec keeps no per-call
+#: state (``ATSC3LDPCExact`` returns the syndrome rather than storing it) — so
+#: one instance is safe to share across worker threads and across frames.  The
+#: configuration is fixed for the life of an L1 lock, so the expensive
+#: Tanner-graph / group-interleaver / BCH build happens once instead of per
+#: frame per PLP.  Bounded so an offline caller sweeping MODCODs cannot grow it.
+_CHAIN_CACHE: "OrderedDict[tuple, object]" = OrderedDict()
+_CHAIN_CACHE_MAX = 16
+_CHAIN_CACHE_LOCK = threading.Lock()
+
+
+def _cached_chain(key: tuple, build: "Callable[[], object]"):
+    """Return a shared, cached chain for ``key``, building it once."""
+    with _CHAIN_CACHE_LOCK:
+        chain = _CHAIN_CACHE.get(key)
+        if chain is None:
+            chain = build()
+            _CHAIN_CACHE[key] = chain
+        _CHAIN_CACHE.move_to_end(key)
+        while len(_CHAIN_CACHE) > _CHAIN_CACHE_MAX:
+            _CHAIN_CACHE.popitem(last=False)
+    return chain
+
+
+def data_plp_chain(mod: str, rate: int, ninner: int = NINNER_SHORT,
+                   max_iterations: int = 100) -> "DataPlpChain":
+    """Shared :class:`DataPlpChain` for a data-PLP decode configuration."""
+    key = ("data", mod, int(rate), int(ninner), int(max_iterations))
+    return _cached_chain(key, lambda: DataPlpChain(
+        mod=mod, rate=rate, ninner=ninner, max_iterations=max_iterations))
 
 
 # QPSK constellation (A/322 Table C.1.1): bit pair (y0,y1) -> (Re,Im).
@@ -637,13 +672,13 @@ class DataPlpChain:
         # A1: first look at the primary alpha with a small cap; a clean block
         # converges here, so the full ladder is never entered.
         fast = min(self.ldpc.max_iterations, self.FAST_ITERATIONS)
-        bits, converged = self.ldpc.decode(llr, max_iterations=fast,
-                                           alpha=ladder[0])
+        bits, converged, n_unsat = self.ldpc.decode(
+            llr, max_iterations=fast, alpha=ladder[0], return_syndrome=True)
         if not converged:
             # A2: only pay for the ladder when the capped decision is not already
-            # at the chance level of a random hard decision.
-            if (self.ldpc.n_unsatisfied()
-                    > self.LADDER_SKIP_UNSATISFIED * self.ldpc.M):
+            # at the chance level of a random hard decision.  ``n_unsat`` is
+            # returned per call, so nothing shared is read across worker threads.
+            if n_unsat > self.LADDER_SKIP_UNSATISFIED * self.ldpc.M:
                 return FecBlock(bits=bits, converged=False, bch_ok=False,
                                 bch_syndrome=-1, payload_bits=None, packet=None)
             bits, converged = self.ldpc.decode(llr, alpha=ladder[0])
@@ -932,7 +967,10 @@ def decode_subframe0_qpsk_plp(y: np.ndarray, t0: int, fft_size: int,
                            n_data_symbols, sbs_symbols=sbs_symbols,
                            preamble_structure=preamble_structure,
                            l1_cells=l1_cells)
-    chain = QPSKPlpChain(max_iterations=max_iterations)
+    chain = _cached_chain(
+        ("qpsk", int(NINNER_SHORT), int(QPSKPlpChain.QPSK_RATE),
+         int(max_iterations)),
+        lambda: QPSKPlpChain(max_iterations=max_iterations))
     #: QPSK: 2 bits per cell (A/322 Table 6.14).
     cells_per_block = chain.ninner // MODULATION_BITS[QPSK]
     n_fec = plp_size // cells_per_block
@@ -1034,8 +1072,8 @@ def decode_cti_plp(stream_cells: np.ndarray, plp, max_iterations: int = 100,
     if max_blocks is not None:
         n_blocks = min(n_blocks, max_blocks)
 
-    chain = DataPlpChain(mod=mod, rate=RATE_MIN + plp.code_rate, ninner=ninner,
-                         max_iterations=max_iterations)
+    chain = data_plp_chain(mod, RATE_MIN + plp.code_rate, ninner,
+                           max_iterations)
     blocks = _parallel_fec_blocks(
         lambda m: chain.decode_cells(
             deint.cells[c_offset + m * cells_per_fec:
@@ -1134,8 +1172,7 @@ def decode_data_plp(cells: np.ndarray, mod: str, rate: int, ninner: int = NINNER
         n_fec: Total FEC blocks; derived from ``cells`` if omitted.
         cell_interleaver: A/322 7.1.5.2 HTI cell interleaver flag.
     """
-    chain = DataPlpChain(mod=mod, rate=rate, ninner=ninner,
-                         max_iterations=max_iterations)
+    chain = data_plp_chain(mod, rate, ninner, max_iterations)
     cpf = chain.cells_per_fec
     plp_id = -1
     if n_fec is None:

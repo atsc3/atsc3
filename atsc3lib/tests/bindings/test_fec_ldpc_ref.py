@@ -50,7 +50,7 @@ def test_matches_reference_with_noisy_llr(rate, n):
     assert np.array_equal(got_bits[:ldpc.K], ref_bits)
 
 
-def test_hard_decision_matches_last_hard():
+def test_hard_decision_satisfies_syndrome():
     """The full hard vector must satisfy the same syndrome as the reference."""
     from atsc3lib.ldpc_exact import ATSC3LDPCExact
     ldpc = ATSC3LDPCExact(2, n=16200, max_iterations=50)

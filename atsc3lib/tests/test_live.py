@@ -27,6 +27,7 @@ from atsc3lib.live import (
 
 _DATA = os.path.join(os.path.dirname(__file__), "data")
 _SLICE = os.path.join(_DATA, "rf33_acquire_slice.npy")
+_LOCK = os.path.join(_DATA, "rf33_live_lock.cs8")
 _ROUTE_DG = os.path.join(_DATA, "route_media_flow_8321.dg.gz")
 
 
@@ -137,6 +138,72 @@ class TestLiveLoopOnAir:
             LiveConfig(max_windows=0)
         with pytest.raises(ValueError):
             LiveConfig(max_frames=0)
+
+
+class TestLiveLockPersistence:
+    """The lock is held across windows: acquire once, then stream frames.
+
+    Uses a real 0.7 s RF33 capture (int8, 10 MS/s).  A per-window re-acquire
+    would show one acquisition per window; the held lock shows exactly one
+    across all of them.
+    """
+
+    @pytest.mark.skipif(not os.path.exists(_LOCK),
+                        reason="real lock-persistence capture not present")
+    def test_lock_is_held_across_windows(self):
+        receiver = LiveReceiver(
+            FileIqSource(_LOCK, 10e6, "cs8"),
+            LiveConfig(plp_id=16, max_frames=1, acquire_window_s=0.10,
+                       relock_every=10))
+        for _ in range(10):
+            if not receiver.run_once():
+                break
+        s = receiver.stats
+        assert s.windows >= 5
+        assert s.acquisitions == 1          # locked once, not once per window
+        assert s.lock_failures == 0
+        assert s.relocks == 0
+        assert s.frames_decoded >= 2        # successive frames off the held lock
+
+    @pytest.mark.skipif(not os.path.exists(_LOCK),
+                        reason="real lock-persistence capture not present")
+    def test_stream_buffer_is_bounded(self):
+        receiver = LiveReceiver(
+            FileIqSource(_LOCK, 10e6, "cs8"),
+            LiveConfig(plp_id=16, max_frames=1, acquire_window_s=0.10))
+        for _ in range(10):
+            if not receiver.run_once():
+                break
+            if receiver._lock is not None:
+                # Frame period 1.7 MSamples + one window (0.1 s -> 0.7 MSamples)
+                # plus the ~14-sample filter tail; never grows without bound.
+                assert receiver._lock.main.size <= 2_600_000
+
+    @pytest.mark.skipif(not os.path.exists(_LOCK),
+                        reason="real lock-persistence capture not present")
+    def test_config_change_triggers_relock(self, monkeypatch):
+        # Emulate a multiplex reconfiguration detected at the periodic L1
+        # re-check: the held lock must be replaced, not silently reused.
+        from atsc3lib import live as live_mod
+        real = live_mod._config_fingerprint
+        state = {"n": 0}
+
+        def changed(result):
+            state["n"] += 1
+            if state["n"] == 2:             # the first re-check sees a change
+                return ("reconfigured",)
+            return real(result)
+
+        monkeypatch.setattr(live_mod, "_config_fingerprint", changed)
+        receiver = LiveReceiver(
+            FileIqSource(_LOCK, 10e6, "cs8"),
+            LiveConfig(plp_id=16, max_frames=1, acquire_window_s=0.10,
+                       relock_every=2))
+        for _ in range(6):
+            if not receiver.run_once():
+                break
+        assert receiver.stats.relocks >= 1
+        assert receiver.stats.acquisitions >= 1
 
 
 class TestLiveMediaSink:
