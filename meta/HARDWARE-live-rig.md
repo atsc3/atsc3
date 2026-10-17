@@ -6,6 +6,11 @@ machine, with the SDRplay RSP1B and the `atsc3lib` receiver.  See
 `meta/TODO-ldpc-demod-enhancements.md` (follow-on) and
 `wiki/analyses/gpu-and-algo-speedups.md`.
 
+**Re-measured and reconciled 2026-10-17** — the serial-floor work landed
+2026-10-16/17 and the CPU numbers quoted in the earlier drafts of this file and
+of `meta/TODO-ldpc-demod-enhancements.md` were stale (see "Re-measured split"
+below).  The decision is unchanged; the arithmetic behind it is now consistent.
+
 ## Decision
 
 - **One box, not split.**  GPU and CPU together; the RSP1B (USB) moves to it.
@@ -55,13 +60,27 @@ GPU candidates (all current-driver):
 | RTX 5070 Ti | 16 GB | 256-bit GDDR7 | 896 GB/s | ~74 ms | premium new |
 | RTX 4070 / 4070 Super | 12 GB | 192-bit | 504 GB/s | ~132 ms | fine |
 | (avoid) RTX 5060 Ti | 16 GB | **128-bit** | 448 GB/s | ~149 ms | more VRAM, slower |
-| (avoid) RTX 4060 | 8 GB | 128-bit | 288 GB/s | ~231 ms | too slow |
+| (avoid) RTX 4060 | 8 GB | 128-bit | 272 GB/s | ~245 ms | too slow — at the budget edge |
+| (avoid) RTX 4060 Ti | 16 GB | 128-bit | 288 GB/s | ~231 ms | more VRAM, slower |
+
+*Worst case* above = 66.6 GB / bandwidth, i.e. **100% of peak bandwidth and a
+zero CPU remainder** — an optimistic floor, not a prediction.  A real batched
+min-sum kernel sustains ~70-80% of peak, and the per-frame CPU remainder
+(~0.10 s measured 2026-10-17; see "Re-measured split" below) is *serial* with the
+FEC unless it is pipelined, so the two terms add.  The >= ~500 GB/s rule is set
+~1.85x above the raw 269.5 GB/s (66.6 GB / 247.1 ms) the traffic needs, and that
+ratio is exactly what absorbs the sub-peak efficiency and the CPU remainder.
 
 The 12 GB **RTX 5070** matches the 16 GB **4070 Ti Super** on bandwidth
 (672 GB/s) for ~$430 less (GPU-only: RTX 5070 ~$972 vs 4070 Ti Super ~$1,400),
 and the extra 4 GB of VRAM buys nothing for this workload.
 
 ## Candidate machines (2026-10-05)
+
+> **Stale (flagged 2026-10-17):** the eBay/Newegg/Facebook links below are from
+> 2026-10-05 and individual listings expire in days — treat the item numbers as
+> gone and re-run the saved-search links at the bottom of the section instead.
+> The *requirements* above are unaffected; only the specific offers are.
 
 **Selected config, 8-core + RTX 5070 12 GB (~$1,400-1,600):**
 - eBay: 7700X + RTX 5070 + 32 GB — `ebay.com/itm/236813627616`,
@@ -89,23 +108,40 @@ Ryzen 9 7950X/9950X builds.  Not chosen: the 16 cores are not the live lever
 with GPU FEC, and the premium Blackwell towers (9950X + 5070 Ti, ~$5,000) are
 ~3x the price for a bandwidth step this workload will not fully use.
 
+**Evaluated and rejected (2026-10-17)** — cheap used gaming boxes offered as a
+stopgap, both Turing:
+
+| Listing | CPU | GPU | Verdict |
+|---|---|---|---|
+| `800070121616`, $600 | i7-10700, 8c/16t DDR4 | RTX 2080 Hybrid, **448 GB/s**, sm_75 | No — bandwidth equals the "(avoid) 5060 Ti" row |
+| `117373825245`, $575 | i7-9700K, 8c/8t DDR4 | RTX 2080 Super, **496 GB/s**, sm_75 | No, but the better of the two — ~1% under the rule, 2 TB + 512 GB m.2 |
+
+Neither is a fit: both are at or below the bandwidth rule, both sit exactly on
+the CUDA 13 support floor (sm_75, no forward room — see the software notes), and
+on both platforms a later GPU upgrade costs more than the selected box outright.
+The CPU side is *not* the objection — with the non-FEC remainder at ~0.10 s, any
+8-core CPU is ample; the GPU is the whole decision.  Buying either also
+pre-empts the plan's own step 5: prototype `gpubindings` on a rented GPU and
+differential-test it *before* buying, since the FEC traffic figure the whole
+table above rests on (66.6 GB/frame) is still an estimate, not a measurement.
+
 ## Selected
 
 **Ryzen 7 7700X (8c/16t) + RTX 5070 12 GB + 32 GB DDR5, ~$1,400-1,600 (used).**
 8 cores/16 threads run the pool build and pipeline; the RTX 5070 does
-demap+LDPC+BCH at 672 GB/s (2.7x the bandwidth floor, ~99 ms worst case) on
+demap+LDPC+BCH at 672 GB/s (2.5x the bandwidth floor, ~99 ms worst case) on
 current Blackwell drivers (sm_120); USB 3.0 for the RSP1B.  The savings versus
-the 16-core/4070 Ti Super config go to nothing it needs — the mandate is the
-serial-floor fixes below, not more cores.
+the 16-core/4070 Ti Super config go to nothing it needs — the mandate was the
+serial-floor fixes (now done — see the re-measured split below), not more cores.
 
 ## Prerequisite for true live: the serial-floor fixes (CPU side)
 
-With the GPU on FEC, the remaining per-frame CPU work is the blocker, not core
-count: pool build ~0.9 s (serial 75x16K FFT + dense channel), `DataPlpChain`
-setup ~0.4 s rebuilt every frame/PLP, acquisition ~14 s per live window unless
-the lock is held, plus the network layer.  That floor alone exceeds the 247 ms
-budget, so true live requires (see `meta/TODO-ldpc-demod-enhancements.md`
-follow-on):
+**All landed 2026-10-16/17.**  The original case, kept for the record: with
+the GPU on FEC the per-frame CPU work was the blocker, not core count — pool
+build ~0.9 s (serial 75x16K FFT + dense channel), `DataPlpChain` setup ~0.4 s
+rebuilt every frame/PLP, acquisition ~14 s per live window unless the lock was
+held, plus the network layer.  That floor alone exceeded the 247 ms budget, so
+true live required (see the follow-on in `meta/TODO-ldpc-demod-enhancements.md`):
 
 1. Cache `DataPlpChain`/tables/plans once per lock; hold the L1 lock across
    frames (no per-window re-acquisition).  **[done 2026-10-16]** — bounded
@@ -114,15 +150,52 @@ follow-on):
 2. Batch the pool build (one 2-D FFT over the subframe body; thread the
    per-symbol channel estimation).  **[done 2026-10-16]** — 2-D FFT carrier
    cache (B3) + threaded per-symbol loop + cached pilot reference sequence;
-   pool build 0.883 -> 0.223 s.
+   pool build 0.883 -> 0.223 s, **0.176 s re-measured 2026-10-17**.
 3. Pipeline capture <-> FEC <-> network, so frame N+1 capture overlaps frame N
    decode.  **[done 2026-10-16]** — `LiveReceiver.run_pipelined` (bounded
    capture queue) with an optional bounded network worker
    (`network_async=True`) that runs the ALP/IP/LLS stage off the decode thread.
 4. Speed up the 2.7 s BCH stage.  **[done 2026-10-16]** — vectorized the
-   received-vector build; BCH 10.3 -> 5.12 ms/block.
+   received-vector build; BCH 10.3 -> 5.12 ms/block, **5.06 ms/block re-measured
+   2026-10-17**.
+5. Cache the baseband scrambler (found later; not in the original four).
+   **[done 2026-10-17]** — `signaling_fec.randomizer_bits` (A/322 5.2.3) was an
+   uncached Python LFSR rebuilt for each of the 117 baseband packets; cached by
+   length, `scramble_bits` x117 1.551 -> 0.0006 s.  This was the bulk of what
+   had been misread as per-block FEC setup overhead.
 
-These are mandatory regardless of hardware; the GPU only removes the FEC wall.
+These were mandatory regardless of hardware; the GPU only removes the FEC wall.
+
+## Re-measured split (2026-10-17)
+
+`python -m tools.bench_decode --workers 1,2,4 --repeats 5` on the dev host
+(i5-4278U, 2c/4t), RF33 subframe-1 PLP-1 (256QAM 11/15, 64800, 117 FEC blocks):
+
+| Stage | 2026-10-05 | 2026-10-17 |
+|---|---|---|
+| Pool build (75x16K FFT + dense CH) | 0.883 s | **0.176 s** |
+| Demap / FEC block | 55.2 ms | **31.05 ms** |
+| LDPC / FEC block | 57.1 ms | **51.12 ms** |
+| BCH / FEC block | 10.3 ms | **5.06 ms** |
+| FEC serial total | 14.34 s | **10.21 s** |
+| Whole frame @1 / @2 / @4 workers | 16.00 / 9.29 / 7.35 s | **10.31 / 5.46 / 4.12 s** |
+
+Two consequences for the GPU decision:
+
+- **The non-FEC remainder is ~0.10 s/frame**, not the ~1 s that earlier drafts of
+  this file and of `wiki/analyses/gpu-and-algo-speedups.md` quoted (that figure
+  predated the scrambler cache).  The frame is now ~97% FEC arithmetic.
+- Because the CPU side has been squeezed out, **GPU bandwidth is the single term
+  that decides whether 247 ms is reachable.**  The serial-floor work made the GPU
+  requirement *more* binding, not less — the >= ~500 GB/s rule above is now a
+  pass/fail bar rather than margin-for-comfort, and it must be read together with
+  the peak-efficiency caveat on the GPU table (its times assume 100% of peak and
+  a zero CPU remainder; a real kernel sustains ~70-80%, and the two terms add).
+
+**Correction:** the whole-frame figures `13.24/7.56/5.63 s` that appeared in the
+2026-10-16 summary of `meta/TODO-ldpc-demod-enhancements.md` were a
+pre-scrambler-cache snapshot; the table above supersedes them (and the LDPC and
+demap deltas are host run-to-run variance, not improvements).
 
 ## Software notes for the GPU rung
 
@@ -131,5 +204,13 @@ These are mandatory regardless of hardware; the GPU only removes the FEC wall.
 - Target sm_120 (Blackwell / RTX 5070) — or sm_89 for Ada; both on current
   toolkits.  Prefer a raw CUDA extension over CuPy/PyTorch to avoid the
   Python-GPU-library version maze.
-- GPU accelerates demap + LDPC + BCH only.  The serial CPU floors above must
-  still be fixed for true live.
+- **Confirmed 2026-10-17 (CUDA Toolkit 13.0 release notes):** CUDA 13.0
+  "supports all NVIDIA architectures from Turing through Grace Blackwell" and
+  dropped *offline compilation* below compute capability 7.5.  Turing (RTX
+  20-series, sm_75) therefore still builds today, but it is the **floor** — no
+  forward room, and it is the oldest target the kernels would ever carry.  This
+  is why a used RTX 2080 / 2080 Super (both sm_75) is a stopgap, not the
+  selected card.
+- GPU accelerates demap + LDPC + BCH only.  The serial CPU floors above were
+  fixed separately (2026-10-16/17); the GPU removes the FEC wall, which with them
+  done is now essentially the whole frame.

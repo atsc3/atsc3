@@ -14,19 +14,27 @@ pass; suite 773 passed. `tests/bindings/test_demod_demap_ref.py` now compares
 the C demapper against the true NumPy reference `nuc._demap_llr_numpy` (the old
 version compared the C kernel to itself through `nuc.demap_llr`).
 
-Measured with `python -m tools.bench_decode --workers 1,2,4` on the same host,
-before/after (best-of repeats):
+Measured with `python -m tools.bench_decode --workers 1,2,4 --repeats 5` on the
+same host (i5-4278U, 2c/4t), three dated snapshots:
 
-| Stage | Before | After | Note |
-|---|---|---|---|
-| Pool build (75x16K FFT + dense CH) | 0.883 s | **0.681 s** | B3 carrier cache (-23%) |
-| Demap / FEC block | 55.2 ms | **32.6 ms** | B1 fused passes (-41%) |
-| LDPC / FEC block | 57.1 ms | 56.6 ms | unchanged (A does not move a clean signal) |
-| BCH / FEC block | 10.3 ms | 10.8 ms | unchanged |
-| FEC serial total | 14.34 s | **11.69 s** | |
-| Whole frame @1 worker | 16.00 s | **13.87 s** | |
-| Whole frame @2 workers | 9.29 s | **7.30 s** | |
-| Whole frame @4 workers | 7.35 s | **6.02 s** | |
+| Stage | Before (2026-10-05) | After Track A/B (2026-10-16) | Now (2026-10-17) | Note |
+|---|---|---|---|---|
+| Pool build (75x16K FFT + dense CH) | 0.883 s | 0.681 s | **0.176 s** | B3 carrier cache, then threaded loop + cached pilot reference |
+| Demap / FEC block | 55.2 ms | 32.6 ms | **31.05 ms** | B1 fused passes (-44%) |
+| LDPC / FEC block | 57.1 ms | 56.6 ms | **51.12 ms** | Track A does not move a clean signal |
+| BCH / FEC block | 10.3 ms | 10.8 ms | **5.06 ms** | vectorized received-vector build (-51%) |
+| FEC serial total | 14.34 s | 11.69 s | **10.21 s** | |
+| Whole frame @1 worker | 16.00 s | 13.87 s | **10.31 s** | |
+| Whole frame @2 workers | 9.29 s | 7.30 s | **5.46 s** | |
+| Whole frame @4 workers | 7.35 s | 6.02 s | **4.12 s** | |
+
+The columns are dated snapshots, not a continuous series: the middle column is
+the state at the Track A/B commit (before the pool/BCH/scrambler fixes), and it
+was quoted without a date in earlier drafts, which is what made it look like the
+current figure.  **The demap and LDPC deltas between the middle and right columns
+are host run-to-run variance (~±10%), not improvements** — only the pool build
+and BCH rows moved by design after the middle column.  A second
+`--repeats 3` run the same day agreed within 1-3%.
 
 B4 (`-O3`) is in `setup.py`. B5 reports the split; numbers are above, not a
 timing-dependent pytest. A1/A2 do not change the clean-signal whole-frame time
@@ -147,7 +155,7 @@ Broader throughput discussion.  Status of the mandatory serial-floor fixes:
   build 0.883 s -> **0.223 s** (-75%), bit-identical (gated by
   `test_subframe1.py` threaded-vs-serial and the 117/117 air gate).  The
   per-symbol dense channel loop is still a Python loop (threaded, not
-  vectorized).
+  vectorized).  *Re-measured 2026-10-17: 0.176 s; see the bench note at the end.*
 - **Speed up the BCH stage (done).**  `BCHCode.decode` built the received vector
   with a Python list comprehension over ~47k bits per block; it now uses a NumPy
   cast-and-mask.  BCH 10.3 -> **5.12 ms/block** (-50%), bit-identical
@@ -158,7 +166,8 @@ Broader throughput discussion.  Status of the mandatory serial-floor fixes:
   `scramble_bits` x117: 1.551 s -> **0.0006 s**; whole frame @1 worker
   12.585 -> **11.309 s**.  Bit-identical (the sequence always restarts from the
   seed; callers only read/copy it), gated by the A/322 5.2.3 gold vector and the
-  117/117 air gate.
+  117/117 air gate.  *Re-measured 2026-10-17: the whole frame @1 worker is
+  10.31 s, and the non-FEC remainder is ~0.10 s — see the bench note at the end.*
 - **Pipeline capture<->FEC<->network (done).**
   `LiveReceiver.run_pipelined` reads windows on a capture thread into a bounded
   queue while the lock/decode state machine runs on the caller's thread; with
@@ -168,9 +177,23 @@ Broader throughput discussion.  Status of the mandatory serial-floor fixes:
   produce identical stats to the synchronous loop (`test_live.py`).  A worker
   failure is captured and re-raised on close.
 
-Bench (same host, 256QAM 11/15, 117 blocks, best-of): FEC serial 14.34 -> 11.16 s;
-pool build 0.883 -> 0.223 s; BCH 10.3 -> 5.12 ms/block; whole frame @1/2/4 workers
-16.00/9.29/7.35 -> 13.24/7.56/5.63 s.
+Bench (same host, 256QAM 11/15, 117 blocks; **re-measured 2026-10-17**, best of
+5, `python -m tools.bench_decode --workers 1,2,4 --repeats 5`): FEC serial
+14.34 -> **10.21 s**; pool build 0.883 -> **0.176 s**; demap 55.2 -> **31.05
+ms/block**; LDPC 57.1 -> **51.12 ms/block**; BCH 10.3 -> **5.06 ms/block**;
+whole frame @1/2/4 workers 16.00/9.29/7.35 -> **10.31/5.46/4.12 s**.
+
+The non-FEC remainder is now **~0.10 s per frame** on this host (whole frame @1
+worker 10.31 s against the 10.21 s FEC serial sum).  **Superseded:** the figures
+`13.24/7.56/5.63 s` and "~1 s of Python orchestration" that appeared in earlier
+drafts of this file and of `wiki/analyses/gpu-and-algo-speedups.md` came from the
+pre-scrambler-cache run and contradict this file's own scaler entry above
+(`12.585 -> 11.309 s`); the re-measurement above replaces all of them.  Treat
+single-digit-percent per-stage differences between runs on this host as noise.
+
+Because the CPU remainder is now ~0.1 s, **the frame is ~97% FEC arithmetic**, so
+the GPU's bandwidth is the single term that decides whether 247 ms is reachable —
+the serial-floor work made the GPU requirement more binding, not less.
 
 - True-live target is < 247 ms/frame (RF33 period); sub-second (< 1 s) is
   near-live and still drops frames.

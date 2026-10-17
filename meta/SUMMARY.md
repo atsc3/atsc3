@@ -48,14 +48,15 @@ examples and test vectors.
 | PLP-1 fixture gate (2026-10-05) | `tests/data/rf33_sf1_y.npy` | pool 956179, **117/117** | ✓ Decode-gated (23.0 dB fresh record) |
 
 **RF33 is the lighthouse and it decodes.**  PLP-0 (64QAM-NUC 11/15) converges
-53-60 of 74 FEC blocks off air and yields the A/331 **SLT** (`bsid="540"`,
+**74/74** FEC blocks off air and yields the A/331 **SLT** (`bsid="540"`,
 majors WHUT/WJLA/WTTG/WRC/WUSA) and SystemTime.  PLP-16 (QPSK 2/15) is
 byte-identical to the independent receiver.  **This retracts the earlier
 "padding-only, 64QAM unachievable" verdict**: the blocker was a demapper
 **scale** bug — the A/322 NUC alphabets are unit-power but the equaliser output
 is not, and the max-log metric is not scale-free.  Fixed in
-`DataPlpChain.decode_cells` (normalise each FEC block to unit mean power);
-raw 0/74 → normalised 53-60/74.
+`DataPlpChain.decode_cells` (normalise each FEC block to unit mean power):
+raw 0/74 → 53-60/74 on the HackRF → **74/74** after the SDRplay RSP1B front end
+replaced it (the HackRF was retired for dynamic range, not for this bug).
 
 **PLP-1 (256QAM-NUC 11/15) now decodes 117/117 off air (2026-10-01).**  The
 earlier "21.2 dB MER, above the 20 dB synthetic threshold, therefore a chain
