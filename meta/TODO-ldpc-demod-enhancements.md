@@ -152,6 +152,13 @@ Broader throughput discussion.  Status of the mandatory serial-floor fixes:
   with a Python list comprehension over ~47k bits per block; it now uses a NumPy
   cast-and-mask.  BCH 10.3 -> **5.12 ms/block** (-50%), bit-identical
   (`test_bch.py`, `test_fec_bch_c.py`).
+- **Cache the baseband scrambler (done).**  `signaling_fec.randomizer_bits`
+  (A/322 5.2.3) was an uncached Python LFSR rebuilt for every baseband packet
+  (117x/frame); it is now cached by length, like `reference_sequence`.
+  `scramble_bits` x117: 1.551 s -> **0.0006 s**; whole frame @1 worker
+  12.585 -> **11.309 s**.  Bit-identical (the sequence always restarts from the
+  seed; callers only read/copy it), gated by the A/322 5.2.3 gold vector and the
+  117/117 air gate.
 - **Pipeline capture<->FEC<->network (done).**
   `LiveReceiver.run_pipelined` reads windows on a capture thread into a bounded
   queue while the lock/decode state machine runs on the caller's thread; with

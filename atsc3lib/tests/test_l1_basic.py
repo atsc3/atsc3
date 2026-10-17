@@ -22,6 +22,25 @@ class TestRandomizer:
         bits = rng.integers(0, 2, 500, dtype=np.uint8)
         assert np.array_equal(scramble_bits(scramble_bits(bits)), bits)
 
+    def test_sequence_is_cached_by_length(self):
+        # The sequence is a fixed function of its length; it is rebuilt per
+        # baseband packet otherwise (117x/frame).  The cache returns the same
+        # array with the same values.
+        a = _randomizer_bits(47328)
+        b = _randomizer_bits(47328)
+        assert a is b
+        assert list(a[:16]) == list(_randomizer_bits(16))
+
+    def test_cache_is_not_mutated_by_scramble(self):
+        # Callers only read/copy the shared sequence, so repeated scrambling
+        # must not corrupt it.
+        seq = _randomizer_bits(256)
+        before = seq.copy()
+        rng = np.random.default_rng(1)
+        bits = rng.integers(0, 2, 256, dtype=np.uint8)
+        scramble_bits(bits)
+        assert np.array_equal(_randomizer_bits(256), before)
+
 
 class TestCodecConstruction:
     def test_all_modes(self):
