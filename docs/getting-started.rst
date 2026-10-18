@@ -21,10 +21,11 @@ What you need
   the reference signal is **RF33 / 587 MHz** (WHUT mux, BSID 540).
 * Python 3.10-3.13 and a C toolchain.
 * For **live** reception, an NVIDIA GPU with >= ~500 GB/s memory bandwidth
-  (see :doc:`hardware`); the receiver runs without one, just below real time.
+  (see :doc:`live-streaming`); the receiver runs without one, just below real
+  time.
 
-See :doc:`sdrplay` for front-end setup, :doc:`hardware` for host sizing, and
-:doc:`live-streaming` before planning a *live* (real-time) deployment.
+See :doc:`sdrplay` for front-end setup and :doc:`live-streaming` for host
+sizing and the live (real-time) pipeline.
 
 System prerequisites
 --------------------
@@ -198,8 +199,8 @@ Next steps
 ----------
 
 * :doc:`sdrplay` — front-end setup, gain, and troubleshooting.
-* :doc:`hardware` — host sizing and the live frame budget.
-* :doc:`live-streaming` — the live pipeline, stage timings, and how to measure.
+* :doc:`live-streaming` — host sizing, the live frame budget, the pipeline,
+  and how to measure.
 * :doc:`pki-transmission` — create a CA, issue a certificate, and transmit and
   verify a signed frame.
 * :doc:`python-api` — the Python entry points.

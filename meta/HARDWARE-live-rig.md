@@ -1,8 +1,8 @@
 # Hardware target — single-box live receiver (CPU + GPU)
 
-**Documentation:** ``docs/hardware.rst`` is the doc-facing summary of this
-file (host spec, candidate table and measured prototype).  This file remains
-the engineering record with the full derivation.
+**Documentation:** ``docs/live-streaming.rst`` is the doc-facing summary of this
+file (host spec, candidate table, measured prototype and live pipeline).  This
+file remains the engineering record with the full derivation.
 
 Decision recorded 2026-10-05 (revised same day: 8 cores + RTX 5070).  Goal:
 sub-second (ideally true-live < 247 ms) decode of the RF33 256QAM PLP on one

@@ -50,10 +50,9 @@ Start here
   and decode a real broadcast from the command line and from Python.
 * :doc:`sdrplay` — set up the SDRplay RSP1B front end (SDRplay API, SoapySDR,
   ``sdrbindings``), tune gain, and troubleshoot capture.
-* :doc:`hardware` — the live frame budget, CPU/GPU requirements, the selected
-  host, and the measured prototype numbers.
-* :doc:`live-streaming` — the current state of *live* (real-time) reception,
-  the pipeline, and how to run and measure it.
+* :doc:`live-streaming` — live (real-time) reception: the frame budget,
+  CPU/GPU requirements, the selected host, the pipeline, the measured
+  prototype, and how to validate a host.
 * :doc:`pki-transmission` — create a certificate authority, issue a
   broadcaster certificate, transmit a signed frame, and receive and verify it;
   includes rotating the receiver trust anchor (overlap).
@@ -74,8 +73,7 @@ Reference
    to playable 1920x1080 HEVC video with AC-4 audio.  The accelerated live
    path meets the 247 ms frame period in the stage benchmark on a prototype
    GPU (193-198 ms/frame); the remaining proof is an on-air run on the RSP1B
-   rig.  See :doc:`hardware` and :doc:`live-streaming` before planning a live
-   deployment.
+   rig.  See :doc:`live-streaming` before planning a live deployment.
 
 .. toctree::
    :maxdepth: 2
@@ -83,7 +81,6 @@ Reference
 
    getting-started
    sdrplay
-   hardware
    live-streaming
    pki-transmission
    ca-operator-runbook

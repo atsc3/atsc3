@@ -62,8 +62,7 @@ Acceleration
 ------------
 
 The optional CUDA path is selected at runtime and falls back to the C kernels.
-See :doc:`hardware` for host requirements and :doc:`live-streaming` for the
-pipeline.
+See :doc:`live-streaming` for host requirements and the pipeline.
 
 .. automodule:: atsc3lib.accelerator
    :members:

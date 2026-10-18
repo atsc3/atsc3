@@ -45,15 +45,16 @@ atsc3-live --pipelined --fec-async --freq 587e6 --plp 1
 ```
 
 Runtime selection is `ATSC3LIB_GPU=auto` (default), `on`, or `off`.  See
-[`docs/hardware.rst`](docs/hardware.rst) for the host requirements and the
-measured split.
+[`docs/live-streaming.rst`](docs/live-streaming.rst) for the host requirements
+and the measured split.
 
 
 ## Documentation
 
 The user documentation is built with Sphinx and published to GitHub Pages:
 **https://atsc3.github.io/atsc3/**. It covers getting started, SDRplay setup,
-the hardware/live frame budget, the live pipeline, and the Python API. Build
+live reception and the frame budget (including CPU/GPU host requirements and
+the pipeline), and the Python API. Build
 it locally with `make docs` (output in `docs/_build/html`).
 
 Status and planning notes live in [`meta/`](meta/) (`SUMMARY.md`, the project
