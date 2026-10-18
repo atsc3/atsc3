@@ -58,6 +58,18 @@ Bounded live receive
 .. autoclass:: atsc3lib.live.LiveStats
    :members:
 
+Acceleration
+------------
+
+The optional CUDA path is selected at runtime and falls back to the C kernels.
+See :doc:`hardware` for host requirements and :doc:`live-streaming` for the
+pipeline.
+
+.. automodule:: atsc3lib.accelerator
+   :members:
+
+.. autofunction:: atsc3lib.receiver.build_plp_frame_pool
+
 Security (receiver trust)
 -------------------------
 

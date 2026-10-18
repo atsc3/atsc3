@@ -90,8 +90,17 @@ frames once locked.
 
 ```bash
 atsc3-live --file out/capture.iq --plp 16 --units 12 --max-frames 1
-atsc3-live --freq 587e6 --plp 0                 # live SDRplay
+atsc3-live --pipelined --fec-async --freq 587e6 --plp 1
 ```
+
+With the optional CUDA backend, `--pipelined --fec-async` overlaps the next
+frame's pool build with the current frame's FEC and meets the live frame
+period in the stage benchmark.  Select the backend with `ATSC3LIB_GPU=auto`
+(default), `on`, or `off`; install the kernels with `make install-gpu` (see
+the workspace README).  On the RF33 PLP-1 fixture (256QAM 11/15, 117 blocks)
+the measured sustained time is **193-198 ms/frame** against the 247.1 ms
+period; the CPU fallback is correct but not live (~0.6-0.8 s/frame).  The
+on-air live run is still pending.
 
 ## Synthetic transmission
 
@@ -123,14 +132,14 @@ rx = LiveReceiver(src, LiveConfig(plp_id=16, max_frames=1),
 rx.run(max_windows=12)
 ```
 
-Note: the LDPC (`atsc3lib._bindings.fec`, ~5x), max-log demapper
-(`atsc3lib._bindings.demod`, ~3-6x), BCH (C) and frequency interleaver
-(`atsc3lib._bindings.ofdm`, ~100x) run in C, the
-FEC blocks are threaded across cores, and bootstrap acquisition is 4x faster
-(overlap-save correlation); a PLP-1 (256QAM) subframe frame dropped from ~190 s
-to ~9 s. The pipeline still does not keep up with the 52.7 ms air rate (this is
-an old dual-core host; see AGENTS.md). The loop is correct and bounded
-regardless.
+Note: the LDPC (`atsc3lib._bindings.fec`), max-log demapper
+(`atsc3lib._bindings.demod`), BCH and frequency interleaver
+(`atsc3lib._bindings.ofdm`) run in C, and the FEC blocks are threaded across
+cores.  The optional `gpubindings` backend replaces demap + LDPC + BCH with
+CUDA kernels (bit-identical, differentially tested) and takes the 117-block
+RF33 PLP-1 frame from ~0.6 s on the CPU path to **193-198 ms sustained** when
+the pool build is overlapped with FEC.  The loop is correct and bounded
+regardless of the backend.
 
 ## Python API
 

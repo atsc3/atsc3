@@ -152,6 +152,11 @@ class BCHCode:
     #: matrix columns selected by the set bits of the received word.
     _SYND_CACHE = {}
 
+    #: Cached packed syndrome masks for the zero-error fast path, keyed like
+    #: ``_SYND_CACHE``: one row per (syndrome, field bit), one bit per codeword
+    #: position, so a syndrome bit is a GF(2) parity over the received word.
+    _FAST_SYND_CACHE = {}
+
     def __init__(self, n: int = 16200, t: int = 12):
         if n == 16200:
             polys = _BCH_POLYS_16200
@@ -186,6 +191,86 @@ class BCHCode:
         rem = _poly_mod(msg_int << self.mouter, self.g)
         return msg + _ints_to_bits(rem, self.mouter)
 
+    def _syndrome_matrix(self, n: int) -> np.ndarray:
+        """``E[j, i] = alpha^(j*(n-1-i))`` for ``j = 1..2t`` (cached)."""
+        gf = self.gf
+        key = (self.bits, n, self.t)
+        e = self._SYND_CACHE.get(key)
+        if e is None:
+            j = np.arange(1, 2 * self.t + 1, dtype=np.int64)
+            pos = np.arange(n - 1, -1, -1, dtype=np.int64)
+            exps = (j[:, None] * pos[None, :]) % gf.order
+            e = gf.exp_np[exps]
+            self._SYND_CACHE[key] = e
+        return e
+
+    def _packed_syndrome_masks(self, n: int) -> np.ndarray:
+        """Syndrome matrix as packed GF(2) row masks (zero-error fast path).
+
+        Row ``(j, b)`` has bit ``i`` set where bit ``b`` of
+        ``E[j, i]`` is one, so syndrome bit ``b`` is the parity of the received
+        bits selected by that row.  Packed little-endian so a whole received
+        word can be parity-reduced with ``uint64`` XORs.
+        """
+        key = (self.bits, n, self.t)
+        masks = self._FAST_SYND_CACHE.get(key)
+        if masks is None:
+            e = self._syndrome_matrix(n)
+            shifts = np.arange(self.bits, dtype=np.int64)
+            planes = ((e[:, None, :] >> shifts[None, :, None]) & 1).astype(
+                np.uint8)
+            packed = np.packbits(planes.reshape(-1, n), axis=1,
+                                 bitorder="little")
+            pad = (-packed.shape[1]) % np.dtype(np.uint64).itemsize
+            if pad:
+                packed = np.pad(packed, ((0, 0), (0, pad)))
+            masks = np.ascontiguousarray(packed).view(np.uint64)
+            self._FAST_SYND_CACHE[key] = masks
+        return masks
+
+    def decode_batch(self, received_bits):
+        """Decode a block matrix, taking the zero-error path when possible.
+
+        A codeword whose syndrome is zero is returned unchanged with ``nerr=0``
+        -- the same result :meth:`decode` gives for that input.  A codeword with
+        a non-zero syndrome falls back to the compiled decoder, so the fast path
+        can never change a decision.  On air, LDPC convergence leaves BCH with
+        no errors to correct, so this is the receive-path case.
+
+        Args:
+            received_bits: ``(B, Nouter)`` bits, MSB first.
+
+        Returns:
+            list of ``(message_bits, nerr, ok)``, one per row.
+        """
+        rx = np.asarray(received_bits, dtype=np.uint8) & 1
+        if rx.ndim == 1:
+            rx = rx[None, :]
+        if rx.ndim != 2:
+            raise ValueError(f"expected (B, Nouter) bits, got {rx.shape}")
+        n = rx.shape[1]
+        kpayload = n - self.mouter
+        if kpayload <= 0:
+            raise ValueError("Received vector shorter than BCH parity")
+
+        packed = np.packbits(rx, axis=1, bitorder="little")
+        pad = (-packed.shape[1]) % np.dtype(np.uint64).itemsize
+        if pad:
+            packed = np.pad(packed, ((0, 0), (0, pad)))
+        words = np.ascontiguousarray(packed).view(np.uint64)
+        bad = np.zeros(rx.shape[0], dtype=bool)
+        for row in self._packed_syndrome_masks(n):
+            syndrome = np.bitwise_xor.reduce(words & row, axis=1)
+            bad |= (np.bitwise_count(syndrome) & 1).astype(bool)
+
+        out = []
+        for i in range(rx.shape[0]):
+            if bad[i]:
+                out.append(self.decode(rx[i]))
+            else:
+                out.append((rx[i, :kpayload].copy(), 0, True))
+        return out
+
     def _syndromes(self, rx) -> List[int]:
         """Syndromes S[1..2t] = r(alpha^j) for the shortened codeword r(x).
 
@@ -195,14 +280,7 @@ class BCHCode:
         """
         gf = self.gf
         n = len(rx)
-        key = (self.bits, n, self.t)
-        e = self._SYND_CACHE.get(key)
-        if e is None:
-            j = np.arange(1, 2 * self.t + 1, dtype=np.int64)
-            pos = np.arange(n - 1, -1, -1, dtype=np.int64)
-            exps = (j[:, None] * pos[None, :]) % gf.order
-            e = gf.exp_np[exps]
-            self._SYND_CACHE[key] = e
+        e = self._syndrome_matrix(n)
         rxb = np.asarray(rx, dtype=np.uint8) & 1
         ones = np.flatnonzero(rxb)
         synd = [0] * (2 * self.t + 1)

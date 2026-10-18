@@ -26,6 +26,12 @@ dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
 ]
+# Optional CUDA kernels (workspace member).  Installing this extra builds
+# gpubindings; without it the receiver uses the required C kernels.  On a host
+# with no CUDA toolkit the build skips the kernels and the CPU path runs.
+gpu = [
+    "gpubindings>=0.1,<0.2",
+]
 # Own-CA signed-signaling verification (greenfield PKI track).  Optional: the
 # receiver works without it and the RF33 lighthouse carries no signatures.
 pki = [

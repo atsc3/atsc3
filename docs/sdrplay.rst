@@ -5,7 +5,7 @@ The supported and air-proven front end is the **SDRplay RSP1B**.  This page
 covers installing the three pieces it needs — the SDRplay vendor API, the
 SoapySDR module, and the ``sdrbindings`` extension — then verifying capture
 and tuning gain.  See :doc:`getting-started` for the receiver install and
-:doc:`live-streaming` for host requirements.
+:doc:`hardware` for host requirements.
 
 The capture path at a glance
 ----------------------------

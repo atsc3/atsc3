@@ -196,6 +196,21 @@ class TestLiveLockPersistence:
         assert pipe.stats == sync.stats
         assert len(pipe.streams) == len(sync.streams)
 
+    @pytest.mark.skipif(not os.path.exists(_LOCK),
+                        reason="real lock-persistence capture not present")
+    def test_pipelined_fec_async_matches_synchronous(self):
+        def cfg():
+            return LiveConfig(plp_id=16, max_frames=1, acquire_window_s=0.10)
+
+        sync = LiveReceiver(FileIqSource(_LOCK, 10e6, "cs8"), cfg())
+        for _ in range(10):
+            if not sync.run_once():
+                break
+        pipe = LiveReceiver(FileIqSource(_LOCK, 10e6, "cs8"), cfg())
+        pipe.run_pipelined(max_windows=10, queue_depth=2, fec_async=True)
+        assert pipe.stats == sync.stats
+        assert len(pipe.streams) == len(sync.streams)
+
     def test_pipelined_rejects_bad_depth(self):
         receiver = LiveReceiver(ArrayIqSource(np.zeros(10, dtype=np.complex64),
                                               10e6))

@@ -200,6 +200,11 @@ the serial-floor work made the GPU requirement more binding, not less.
 - GPU route: raw CUDA extension (`gpubindings`) via `try: import`,
   differential-tested against the C/NumPy kernels. CPU remains the required
   fallback. GPU accelerates demap+LDPC+BCH only, not the serial floors.
+  **Prototyped 2026-10-18 on an RTX 2080 Ti**: optional seam landed
+  (`ATSC3LIB_GPU`), RF33 PLP-1 is byte-identical on GPU, and the overlapped
+  pool/FEC live path measures **193-198 ms/frame** against the 247.1 ms period
+  (`tools/bench_live`, `run_pipelined(fec_async=True)`); see
+  `meta/HARDWARE-live-rig.md`.
 - Hardware target selected (single box, **8-core CPU + modern NVIDIA GPU**,
   e.g. Ryzen 7 7700X + RTX 5070 12 GB / 672 GB/s, current Blackwell drivers):
   see `meta/HARDWARE-live-rig.md`.  The 16-core requirement was dropped — with

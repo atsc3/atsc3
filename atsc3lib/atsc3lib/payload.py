@@ -33,6 +33,31 @@ import numpy as np
 #: Worker threads for per-FEC-block decode.  The LDPC and demap kernels release
 #: the GIL, so independent FEC blocks run in parallel; the block count (74-117
 #: for RF33) gives ample parallelism.  ``ATSC3LIB_FEC_THREADS`` overrides.
+def _cpu_quota() -> int:
+    """Effective CPU allowance from the cgroup v2/v1 quota, when set."""
+    for path, scale in (("/sys/fs/cgroup/cpu.max", 1),
+                        ("/sys/fs/cgroup/cpu/cpu.cfs_quota_us", 0)):
+        try:
+            with open(path) as fh:
+                parts = fh.read().split()
+        except OSError:
+            continue
+        if scale:
+            if len(parts) != 2 or parts[0] == "max":
+                return 0
+            quota, period = int(parts[0]), int(parts[1])
+        else:
+            quota = int(parts[0])
+            try:
+                with open("/sys/fs/cgroup/cpu/cpu.cfs_period_us") as fh:
+                    period = int(fh.read())
+            except OSError:
+                continue
+        if quota > 0 and period > 0:
+            return max(1, (quota + period - 1) // period)
+    return 0
+
+
 def _fec_workers() -> int:
     env = os.environ.get("ATSC3LIB_FEC_THREADS")
     if env is not None:
@@ -40,28 +65,52 @@ def _fec_workers() -> int:
             return max(1, int(env))
         except ValueError:
             pass
-    return max(1, os.cpu_count() or 1)
+    return max(1, _cpu_quota() or os.cpu_count() or 1)
 
 
 #: Block count below which threading overhead outweighs the gain (small QPSK
 #: 16200 blocks decode in ~1 ms each).
 _FEC_PARALLEL_MIN_BLOCKS = 4
 
+#: Symbols extracted concurrently.  The per-symbol channel estimate is mostly
+#: short NumPy calls, so GIL hand-off costs more than it saves past two workers
+#: (serial 44 ms, 2 workers 36 ms, 12 workers 92 ms on the RF33 pool).  The
+#: FFT-only carrier cache and the C FEC kernels release the GIL and still use
+#: the full worker count.
+_POOL_SYMBOL_WORKERS = 2
 
-def _parallel_fec_blocks(fn, n: int) -> List:
+
+#: Persistent per-worker-count pools: building a ThreadPoolExecutor costs ~10 ms
+#: (24 thread starts) and a live frame cannot afford that per subframe.
+_POOLS = {}
+_POOL_LOCK = threading.Lock()
+
+
+def _executor(workers: int) -> ThreadPoolExecutor:
+    with _POOL_LOCK:
+        pool = _POOLS.get(workers)
+        if pool is None:
+            pool = ThreadPoolExecutor(max_workers=workers,
+                                      thread_name_prefix="atsc3-fec")
+            _POOLS[workers] = pool
+        return pool
+
+
+def _parallel_fec_blocks(fn, n: int, workers: int = None) -> List:
     """Map ``fn(j) -> block`` over ``j in range(n)``, in parallel when useful.
 
     Falls back to a serial loop for few blocks or a single worker.  Results are
-    returned in index order.
+    returned in index order.  The worker pool is reused across frames.
     """
-    workers = _fec_workers()
-    if n < _FEC_PARALLEL_MIN_BLOCKS or workers == 1:
+    if workers is None:
+        workers = _fec_workers()
+    if n < _FEC_PARALLEL_MIN_BLOCKS or workers <= 1:
         return [fn(j) for j in range(n)]
-    with ThreadPoolExecutor(max_workers=min(workers, n)) as pool:
-        return list(pool.map(fn, range(n)))
+    return list(_executor(min(workers, n)).map(fn, range(n)))
 
 from . import nuc
 from . import spec
+from . import accelerator
 from . import l1_signaling
 from .bch import BCHCode
 from .frequency_interleaver import deinterleave as fi_deinterleave
@@ -404,13 +453,23 @@ def symbol_carriers(y: np.ndarray, t0: int, fft_size: int,
     if n <= 0:
         return np.zeros((0, noc), dtype=np.complex128)
     stride = fft_size + guard_interval
-    idx = (np.arange(n)[:, None] * stride + guard_interval
-           + np.arange(fft_size)[None, :])
-    body = np.asarray(y)[idx].astype(np.complex128)
-    spectrum = np.fft.fftshift(np.fft.fft(body, axis=1), axes=1)
     origin = (spec.NOC_MAX[fft_size] - noc) // 2
     shift = fft_size // 2 + (origin - (spec.NOC_MAX[fft_size] - 1) // 2)
-    return np.ascontiguousarray(spectrum[:, shift:shift + noc])
+    y = np.asarray(y)
+
+    def chunk(bounds) -> np.ndarray:
+        rows = np.arange(bounds[0], bounds[1], dtype=np.int64)
+        idx = (rows[:, None] * stride + guard_interval
+               + np.arange(fft_size)[None, :])
+        body = y[idx].astype(np.complex128)
+        spectrum = np.fft.fftshift(np.fft.fft(body, axis=1), axes=1)
+        return np.ascontiguousarray(spectrum[:, shift:shift + noc])
+
+    nchunks = min(n, max(1, _fec_workers()))
+    edges = np.linspace(0, n, nchunks + 1, dtype=int)
+    parts = _parallel_fec_blocks(
+        lambda c: chunk((edges[c], edges[c + 1])), nchunks)
+    return np.concatenate(parts)
 
 
 def dense_symbol_channel(y: np.ndarray, t0: int, fft_size: int,
@@ -652,6 +711,107 @@ class DataPlpChain:
         #: Data cells consumed by one FEC block at this modulation
         #: (A/322 Table 6.14).
         self.cells_per_fec = ninner // self.mod_bits
+        self._gpu = None
+        self._gpu_lock = threading.Lock()
+
+    def _gpu_decoder(self):
+        """The resident GPU Tanner graph for this chain, or None.
+
+        The graph is uploaded once per chain (and the chain cache is keyed by
+        the full decode configuration, so once per lock).  The handle is
+        single-stream; :meth:`_gpu_decode` serialises access.
+        """
+        if not accelerator.available():
+            return None
+        with self._gpu_lock:
+            if self._gpu is None:
+                self._gpu = accelerator.ldpc_decoder(
+                    self.ldpc.check_idx, self.ldpc.check_mask, self.ldpc.n,
+                    self.ldpc.edge_var)
+            return self._gpu
+
+    def _gpu_decode_many(self, llr: np.ndarray, iterations: int, alpha: float):
+        """Decode ``(B, ninner)`` rows; returns ``(bits, converged, n_unsat)``."""
+        dec = self._gpu_decoder()
+        if dec is None:
+            raise RuntimeError("GPU decoder not available")
+        with self._gpu_lock:
+            return dec.decode_many(llr, max_iter=iterations, alpha=alpha)
+
+    def decode_blocks(self, blocks: np.ndarray, alpha: float = None) -> List[FecBlock]:
+        """Decode a stack of FEC blocks with the batched GPU path.
+
+        Demapping runs as one call over all blocks (per-block ``sigma2``), the
+        LDPC rows are decoded against one resident graph, and BCH takes the
+        zero-error fast path over the whole matrix.  The per-block decisions
+        are identical to :meth:`decode_cells`; when no GPU is available this
+        falls back to the threaded CPU path.
+
+        Args:
+            blocks: ``(B, cells_per_fec)`` equalised cells, one FEC block per
+                row.
+            alpha: pin the normalized-min-sum scale (tests); None uses the
+                oracle ladder, exactly like :meth:`decode_cells`.
+        """
+        mem = np.asarray(blocks, dtype=np.complex128)
+        if mem.ndim != 2 or mem.shape[1] != self.cells_per_fec:
+            raise ValueError(
+                f"expected (B, {self.cells_per_fec}) cells, got {mem.shape}")
+        if len(mem) == 0:
+            return []
+        if not accelerator.available():
+            return _parallel_fec_blocks(
+                lambda j: self.decode_cells(mem[j], alpha=alpha), len(mem))
+
+        power = np.mean(np.abs(mem) ** 2, axis=1, keepdims=True)
+        scale = np.where(power > 0.0, np.sqrt(power), 1.0)
+        cells = mem / scale
+        q = accelerator.demap_llr(
+            cells.reshape(-1), nuc.points(self.mod_bits, self.rate),
+            self.mod_bits, block=self.cells_per_fec)
+        q = q.reshape(len(mem), self.ninner)
+        llr = np.empty(q.shape, dtype=np.float32)
+        llr[:, self.order] = -q
+
+        ladder = (alpha,) if alpha is not None else self.ALPHA_LADDER
+        fast = min(self.ldpc.max_iterations, self.FAST_ITERATIONS)
+        n = len(mem)
+        hard, converged, unsat = self._gpu_decode_many(llr, fast, ladder[0])
+
+        eligible = ~converged & (
+            unsat <= self.LADDER_SKIP_UNSATISFIED * self.ldpc.M)
+        pending = np.flatnonzero(eligible)
+        for a in ladder:
+            if pending.size == 0:
+                break
+            got, conv, uns = self._gpu_decode_many(
+                llr[pending], self.ldpc.max_iterations, a)
+            hard[pending] = got
+            converged[pending] = conv
+            unsat[pending] = uns
+            pending = pending[~conv]
+
+        bits = hard[:, :self.Kldpc]
+        out = [None] * n
+        done = np.flatnonzero(converged)
+        results = {}
+        if done.size:
+            decoded = self.bch.decode_batch(bits[done])
+            results = dict(zip(done.tolist(), decoded))
+        for i in range(n):
+            if not converged[i]:
+                out[i] = FecBlock(bits=bits[i], converged=False, bch_ok=False,
+                                  bch_syndrome=-1, payload_bits=None,
+                                  packet=None)
+                continue
+            payload_bits, _nerr, bch_ok = results[i]
+            packet = scramble_bits(
+                np.asarray(payload_bits, dtype=np.uint8)[:self.kpayload])
+            out[i] = FecBlock(bits=bits[i], converged=True, bch_ok=bool(bch_ok),
+                              bch_syndrome=0 if bch_ok else -1,
+                              payload_bits=packet,
+                              packet=np.packbits(packet).tobytes())
+        return out
 
     def decode_cells(self, cells: np.ndarray, alpha: float = None) -> FecBlock:
         """Decode one FEC block (``cells`` of length ``cells_per_fec``).
@@ -821,7 +981,8 @@ def build_data_symbol_pool(y: np.ndarray, t0: int, fft_size: int,
     # The symbols are independent and the per-symbol work is NumPy/C-heavy, so
     # spread them across the FEC worker count; results are returned in symbol
     # order, so the concatenated pool is bit-identical to the serial loop.
-    parts = _parallel_fec_blocks(extract, n_data_symbols)
+    parts = _parallel_fec_blocks(extract, n_data_symbols,
+                                 workers=_POOL_SYMBOL_WORKERS)
     cells = np.concatenate(parts)
     symbol_of = np.concatenate([np.full(len(x), l, dtype=int)
                                 for l, x in enumerate(parts)])
@@ -980,11 +1141,18 @@ def decode_subframe0_qpsk_plp(y: np.ndarray, t0: int, fft_size: int,
     #: QPSK: 2 bits per cell (A/322 Table 6.14).
     cells_per_block = chain.ninner // MODULATION_BITS[QPSK]
     n_fec = plp_size // cells_per_block
-    blocks = _parallel_fec_blocks(
-        lambda j: chain.decode_cells(
+    if accelerator.available():
+        mem = np.stack([
             pool.cells[plp_start + j * cells_per_block:
-                       plp_start + (j + 1) * cells_per_block]),
-        n_fec)
+                       plp_start + (j + 1) * cells_per_block]
+            for j in range(n_fec)])
+        blocks = chain.decode_blocks(mem)
+    else:
+        blocks = _parallel_fec_blocks(
+            lambda j: chain.decode_cells(
+                pool.cells[plp_start + j * cells_per_block:
+                           plp_start + (j + 1) * cells_per_block]),
+            n_fec)
     return PlpPayload(plp_id=plp_id, fec_blocks=blocks, n_fec=n_fec)
 
 
@@ -1188,14 +1356,21 @@ def decode_data_plp(cells: np.ndarray, mod: str, rate: int, ninner: int = NINNER
 
     blocks = []
     ci = CellInterleaver(cpf) if cell_interleaver else None
+    use_gpu = accelerator.available()
+    mems = []
     for ti in range(nti):
         seg = cells[ti * per_ti:(ti + 1) * per_ti]
         mem = np.stack([twisted_block.fec_block(seg, j, cpf, ncols)
                         for j in range(ncols)])
         if ci is not None:
             mem = ci.deinterleave(mem)
-        blocks.extend(_parallel_fec_blocks(
-            lambda j: chain.decode_cells(mem[j]), ncols))
+        if use_gpu:
+            mems.append(mem)
+        else:
+            blocks.extend(_parallel_fec_blocks(
+                lambda j: chain.decode_cells(mem[j]), ncols))
+    if use_gpu:
+        blocks = chain.decode_blocks(np.concatenate(mems))
     return PlpPayload(plp_id=plp_id, fec_blocks=blocks, n_fec=n_fec)
 
 
