@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=68", "wheel", "numpy"]
+requires = ["setuptools>=68", "setuptools-scm>=8", "wheel", "numpy"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpubindings"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Optional CUDA kernels for the ATSC 3.0 receiver"
 requires-python = ">=3.10,<3.14"
 license = {text = "Apache-2.0"}
@@ -18,3 +18,9 @@ packages = ["gpubindings"]
 
 [tool.setuptools.package-data]
 gpubindings = ["*.cu", "*.cuh"]
+
+[tool.setuptools_scm]
+root = ".."
+version_scheme = "guess-next-dev"
+local_scheme = "no-local-version"
+fallback_version = "0.1.0"

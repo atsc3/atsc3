@@ -25,6 +25,8 @@ jobs:
           - { package: sdrbindings, target: test-sdr, sync: "uv sync --package sdrbindings --group dev" }
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # atsc3lib hard-depends on sdrbindings, so both jobs need the SoapySDR
       # headers to compile it; ac4bindings is standalone.
@@ -54,6 +56,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -74,6 +78,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: System dependencies (SoapySDR for the sdrbindings dep)
         run: |
@@ -97,6 +103,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5

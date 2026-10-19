@@ -48,6 +48,8 @@ render.  Still to land: PCM assembly into ``atsc3lib.media`` and A-CPL (the
 RF33 stream is discrete 5.1, so no upmix is needed to render it).
 """
 
+from importlib.metadata import PackageNotFoundError, version as _dist_version
+
 from . import _ac4
 from . import tables
 from . import huffman
@@ -59,7 +61,10 @@ from . import aspx_hf
 __all__ = ["parse_toc", "substream", "huff_decode", "build_huff_tree",
            "spectral", "framing", "sf", "element", "available", "tables"]
 
-__version__ = "0.1.0"
+try:
+    __version__ = _dist_version("ac4bindings")
+except PackageNotFoundError:
+    __version__ = "0.0.0"
 
 #: The C kernel's SFB row width; must match AC4_SF_MAX_SFB in _ac4.c.
 _SF_MAX_SFB = 64

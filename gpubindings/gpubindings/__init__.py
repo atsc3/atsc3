@@ -11,7 +11,13 @@ Each submodule exposes ``available()`` so a caller can tell "not installed" or
 "no CUDA device" from "installed and ready".
 """
 
+from importlib.metadata import PackageNotFoundError, version as _dist_version
+
 from . import demap, ldpc
 
 __all__ = ["demap", "ldpc"]
-__version__ = "0.1.0"
+
+try:
+    __version__ = _dist_version("gpubindings")
+except PackageNotFoundError:
+    __version__ = "0.0.0"

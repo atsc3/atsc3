@@ -112,6 +112,11 @@ creates a **draft** GitHub release:
 - optional CUDA wheels for `gpubindings` for `sm_75` and `sm_120`
 - `SHA256SUMS` for the `rsp-open` tarballs
 
+Versions for the Python packages are derived from the release tag by
+`setuptools-scm`; the same `v*` tag stamps every Python package (lockstep).
+No `[project].version` edits are needed. The tag must be annotated and point
+at the release commit; the workflows check out full history for this.
+
 The workflow reuses `ci.yml` through `workflow_call`, uses
 `softprops/action-gh-release` with `draft: true`, and grants
 `contents: write` to the release job. No local `gh` login is needed; Actions
@@ -123,8 +128,8 @@ To cut a release:
 git switch main
 git pull --ff-only
 
-# Bump [project].version in the package pyproject files and docs/conf.py
-# to match the tag (currently all packages are 0.1.0).
+# Versions are derived from the tag by setuptools-scm; no manual bump.
+# The tag must be annotated and point at the release commit.
 
 git tag -a v0.1.0 -m "v0.1.0 Intel release"
 git push origin v0.1.0

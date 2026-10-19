@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel", "numpy>=1.24"]
+requires = ["setuptools>=61.0", "setuptools-scm>=8", "wheel", "numpy>=1.24"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "ac4bindings"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Compiled AC-4 (ETSI TS 103 190) decoder kernels for atsc3lib"
 requires-python = ">=3.10,<3.14"
 license = {text = "Apache-2.0"}
@@ -12,3 +12,9 @@ dependencies = ["numpy>=1.24"]
 
 [tool.setuptools]
 packages = ["ac4bindings"]
+
+[tool.setuptools_scm]
+root = ".."
+version_scheme = "guess-next-dev"
+local_scheme = "no-local-version"
+fallback_version = "0.1.0"

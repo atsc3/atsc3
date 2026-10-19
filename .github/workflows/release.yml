@@ -21,6 +21,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.13"
@@ -42,6 +44,8 @@ jobs:
         package: [atsc3lib, ac4bindings, sdrbindings]
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: pypa/cibuildwheel@v2.22.0
         env:
           CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-*"
@@ -73,6 +77,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: System dependencies
         run: |
           sudo apt-get update
@@ -111,6 +117,8 @@ jobs:
         arch: [sm_75, sm_120]
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Build gpubindings CUDA wheel
         env:
           ATSC3_CUDA_ARCH: ${{ matrix.arch }}

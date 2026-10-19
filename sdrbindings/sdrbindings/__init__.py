@@ -30,6 +30,7 @@ IQ (4 bytes per sample); ``cs8=True`` writes int8 IQ (2 bytes per sample).
 """
 
 from dataclasses import dataclass, field
+from importlib.metadata import PackageNotFoundError, version as _dist_version
 from typing import Mapping, Tuple
 
 from . import _core
@@ -40,7 +41,10 @@ __all__ = [
     "format_to_size", "RX", "TX", "CS8", "CS16", "CF32",
 ]
 
-__version__ = "0.1.0"
+try:
+    __version__ = _dist_version("sdrbindings")
+except PackageNotFoundError:
+    __version__ = "0.0.0"
 
 DEFAULT_DRIVER = "sdrplay"
 DEFAULT_FORMAT = CS16

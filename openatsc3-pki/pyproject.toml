@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=61.0", "setuptools-scm>=8", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "openatsc3-pki"
-version = "0.1.0"
+dynamic = ["version"]
 description = "OpenATSC3 certificate authority and content-protection toolkit (ATSC A/360 profiles)"
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
@@ -31,6 +31,12 @@ openatsc3-pki = "openatsc3_pki.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["openatsc3_pki*"]
+
+[tool.setuptools_scm]
+root = ".."
+version_scheme = "guess-next-dev"
+local_scheme = "no-local-version"
+fallback_version = "0.1.0"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

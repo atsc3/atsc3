@@ -9,7 +9,13 @@ validated signalling chain (bootstrap -> Preamble -> L1-Basic -> L1-Detail ->
 per-PLP configuration) on a saved IQ capture.
 """
 
-__version__ = "0.1.0"
+from importlib.metadata import PackageNotFoundError, version as _dist_version
+
+try:
+    __version__ = _dist_version("atsc3lib")
+except PackageNotFoundError:
+    __version__ = "0.0.0"
+
 __author__ = "OpenATSC3"
 
 from . import spec
