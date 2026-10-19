@@ -1,0 +1,152 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  pure:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+      - name: Build pure wheels
+        run: |
+          uv build --package openatsc3-pki --wheel --out-dir dist
+          uv build --package openatsc3-ca --wheel --out-dir dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pure-wheels
+          path: dist/*.whl
+
+  manylinux:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [atsc3lib, ac4bindings, sdrbindings]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pypa/cibuildwheel@v2.22.0
+        env:
+          CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-*"
+          CIBW_SKIP: "*-musllinux_* *-win* *-macosx*"
+          CIBW_ARCHS_LINUX: x86_64
+          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
+          CIBW_OUTPUT_DIR: wheelhouse
+          CIBW_BEFORE_ALL: |
+            if ! pkg-config --exists SoapySDR; then
+              dnf install -y cmake gcc-c++ git pkgconfig
+              git clone --depth 1 --branch soapy-sdr-0.8.1 \
+                https://github.com/pothosware/SoapySDR.git /tmp/SoapySDR
+              cmake -S /tmp/SoapySDR -B /tmp/SoapySDR/build \
+                -DCMAKE_INSTALL_PREFIX=/usr/local \
+                -DSoapySDR_UTILS=OFF -DSoapySDR_PYTHON=OFF -DSoapySDR_TESTS=OFF
+              cmake --build /tmp/SoapySDR/build -j"$(nproc)"
+              cmake --install /tmp/SoapySDR/build
+              ldconfig
+            fi
+        with:
+          package-dir: ${{ matrix.package }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: manylinux-${{ matrix.package }}
+          path: wheelhouse/*.whl
+
+  rsp-open:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libusb-1.0-0-dev libsoapysdr-dev pkg-config
+      - name: Build and test
+        run: |
+          make -C rsp-open
+          make -C rsp-open test
+      - name: Build release tarballs
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p dist "dist/rsp-open-${version}-x86_64-linux/soapy"
+          git archive --format=tar.gz --prefix="rsp-open-${version}/" \
+            -o "dist/rsp-open-${version}.tar.gz" HEAD:rsp-open
+          cp -a rsp-open/librsp.a rsp-open/rsp-capture rsp-open/include \
+            rsp-open/README.md rsp-open/docs rsp-open/LICENSE \
+            "dist/rsp-open-${version}-x86_64-linux/"
+          cp -a rsp-open/soapy/libRspOpenSupport.so \
+            "dist/rsp-open-${version}-x86_64-linux/soapy/"
+          tar -czf "dist/rsp-open-${version}-x86_64-linux.tar.gz" \
+            -C dist "rsp-open-${version}-x86_64-linux"
+          cd dist
+          sha256sum "rsp-open-${version}.tar.gz" \
+            "rsp-open-${version}-x86_64-linux.tar.gz" > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rsp-open
+          path: dist/*
+
+  cuda:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [sm_75, sm_120]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build gpubindings CUDA wheel
+        env:
+          ATSC3_CUDA_ARCH: ${{ matrix.arch }}
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src \
+            -e ATSC3_CUDA_ARCH -e ATSC3_CUDA_REQUIRED=1 \
+            nvidia/cuda:12.8.1-devel-ubuntu22.04 \
+            bash -lc '
+              apt-get update
+              apt-get install -y python3 python3-pip python3-venv git
+              python3 -m pip install --no-cache-dir uv
+              uv build --package gpubindings --wheel --out-dir dist --python 3.13
+            '
+          wheel=$(ls dist/gpubindings-*.whl)
+          mv "$wheel" "${wheel%.whl}-${{ matrix.arch }}.whl"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpubindings-${{ matrix.arch }}
+          path: dist/*.whl
+
+  release:
+    needs: [test, pure, manylinux, rsp-open, cuda]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          files: dist/**
+          generate_release_notes: true
+          draft: true
+          fail_on_unmatched_files: true
