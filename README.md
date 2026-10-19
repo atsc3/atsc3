@@ -148,9 +148,12 @@ Do not move or recreate a published tag; use a new patch tag for a new build.
 PyPI publishing is separate from the GitHub draft release. Upload the pure and
 manylinux wheels plus the sdists with `uv publish` or `twine`, and keep the
 CUDA `gpubindings` wheels as a separate optional release asset. Runtime notes
-for the wheel set: `sdrbindings` links the external SoapySDR library;
-`openatsc3-ca` expects `OPENATSC3_CA_DATABASE_URL` (its `pgserver` test extra is
-Python 3.12-only); and `gpubindings` is the optional CUDA extra for `atsc3lib`.
+for the wheel set: `sdrbindings` leaves `libSoapySDR` and the SoapySDR driver
+module (`rsp-open` or the vendor `sdrplay` API) as system runtime dependencies,
+so that the bindings and the dlopen'd driver share one SoapySDR registry;
+`openatsc3-ca` expects `OPENATSC3_CA_DATABASE_URL` (its
+`pgserver` test extra is Python 3.12-only); and `gpubindings` is the optional
+CUDA extra for `atsc3lib`.
 
 ## Repository layout notes
 

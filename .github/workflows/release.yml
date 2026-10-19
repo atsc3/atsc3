@@ -53,20 +53,51 @@ jobs:
           CIBW_ARCHS_LINUX: x86_64
           CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
           CIBW_OUTPUT_DIR: wheelhouse
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: >-
+            auditwheel repair --exclude libSoapySDR.so.0.8
+            -w {dest_dir} {wheel}
+          # SoapySDR is installed system-wide so the extension links, but it
+          # is deliberately excluded from auditwheel repair.  Drivers (the
+          # vendor sdrplay API or rsp-open) are dlopen'd SoapySDR modules that
+          # register into the SoapySDR copy they were linked against; bundling
+          # a renamed copy in the wheel would give sdrbindings a second
+          # registry with no devices.  auditwheel also only searches
+          # /etc/ld.so.conf plus /lib, /lib64, /usr/lib, /usr/lib64, so
+          # /usr/local is not a usable install prefix here.
           CIBW_BEFORE_ALL: |
             if ! pkg-config --exists SoapySDR; then
               dnf install -y cmake gcc-c++ git pkgconfig
               git clone --depth 1 --branch soapy-sdr-0.8.1 \
                 https://github.com/pothosware/SoapySDR.git /tmp/SoapySDR
               cmake -S /tmp/SoapySDR -B /tmp/SoapySDR/build \
-                -DCMAKE_INSTALL_PREFIX=/usr/local \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_INSTALL_PREFIX=/usr \
+                -DCMAKE_INSTALL_LIBDIR=lib64 \
                 -DSoapySDR_UTILS=OFF -DSoapySDR_PYTHON=OFF -DSoapySDR_TESTS=OFF
               cmake --build /tmp/SoapySDR/build -j"$(nproc)"
               cmake --install /tmp/SoapySDR/build
-              ldconfig
             fi
+            soapy_libdir="$(pkg-config --variable=libdir SoapySDR || true)"
+            soapy_libdir="${soapy_libdir:-/usr/lib64}"
+            printf '%s\n' /usr/lib64 /usr/local/lib64 "$soapy_libdir" \
+              > /etc/ld.so.conf.d/zz-soapysdr.conf
+            ldconfig
+            test -e "$soapy_libdir/libSoapySDR.so.0.8"
         with:
           package-dir: ${{ matrix.package }}
+      - name: Verify SoapySDR stays external
+        if: matrix.package == 'sdrbindings'
+        run: |
+          python - <<'PY'
+          import glob
+          import sys
+          import zipfile
+
+          wheel = glob.glob("wheelhouse/sdrbindings-*.whl")[0]
+          names = zipfile.ZipFile(wheel).namelist()
+          if any("libSoapySDR" in name for name in names):
+              sys.exit(f"{wheel} bundles libSoapySDR: {names}")
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: manylinux-${{ matrix.package }}
