@@ -39,6 +39,8 @@
 #include <cstdlib>
 #include <cstdio>
 
+#include "_cuda_util.cuh"
+
 #define CUDA_CHECK(call)                                                      \
     do {                                                                      \
         cudaError_t err_ = (call);                                            \
@@ -186,10 +188,14 @@ static PyObject *demap_llr(PyObject *self, PyObject *args, PyObject *kwds)
         return PyErr_NoMemory();
     }
 
-    CUDA_CHECK(cudaMemcpy(d_z, PyArray_DATA(cells), z_bytes,
-                          cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_p, PyArray_DATA(pts), p_bytes,
-                          cudaMemcpyHostToDevice));
+    if (!_copy_h2d(d_z, PyArray_DATA(cells), z_bytes, "cells")) {
+        Py_DECREF(out); Py_DECREF(cells); Py_DECREF(pts);
+        return NULL;
+    }
+    if (!_copy_h2d(d_p, PyArray_DATA(pts), p_bytes, "points")) {
+        Py_DECREF(out); Py_DECREF(cells); Py_DECREF(pts);
+        return NULL;
+    }
 
     const int threads = 256;
     const int blocks = (int)(((long)n + threads - 1) / threads);
@@ -219,11 +225,15 @@ static PyObject *demap_llr(PyObject *self, PyObject *args, PyObject *kwds)
             break;
     }
 #undef LAUNCH_MINIMA
-    CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaDeviceSynchronize());
+    if (!_sync_device("minima")) {
+        Py_DECREF(out); Py_DECREF(cells); Py_DECREF(pts);
+        return NULL;
+    }
 
-    CUDA_CHECK(cudaMemcpy(h_best, d_best, (size_t)n * sizeof(double),
-                          cudaMemcpyDeviceToHost));
+    if (!_copy_d2h(h_best, d_best, (size_t)n * sizeof(double), "best")) {
+        Py_DECREF(out); Py_DECREF(cells); Py_DECREF(pts);
+        return NULL;
+    }
 
     /* sigma2 per block, summed in ascending cell order: the same order the C
      * kernel accumulates, so no rounding difference is introduced here. */
@@ -240,17 +250,24 @@ static PyObject *demap_llr(PyObject *self, PyObject *args, PyObject *kwds)
         const double s = sum / (double)(end - start);
         h_sig[k] = (s < 1e-9) ? 1e-9 : s;
     }
-    CUDA_CHECK(cudaMemcpy(d_sig, h_sig, (size_t)nblk * sizeof(double),
-                          cudaMemcpyHostToDevice));
+    if (!_copy_h2d(d_sig, h_sig, (size_t)nblk * sizeof(double), "sig")) {
+        Py_DECREF(out); Py_DECREF(cells); Py_DECREF(pts);
+        return NULL;
+    }
 
     const long scale_blocks = (nout + threads - 1) / threads;
     scale_kernel<<<(int)scale_blocks, threads>>>(d_diff, d_sig, nout,
                                                  blk * (long)mod_order, d_out);
-    CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaDeviceSynchronize());
+    if (!_sync_device("scale")) {
+        Py_DECREF(out); Py_DECREF(cells); Py_DECREF(pts);
+        return NULL;
+    }
 
-    CUDA_CHECK(cudaMemcpy(PyArray_DATA(out), d_out, (size_t)nout * sizeof(double),
-                          cudaMemcpyDeviceToHost));
+    if (!_copy_d2h(PyArray_DATA(out), d_out, (size_t)nout * sizeof(double),
+                   "out")) {
+        Py_DECREF(out); Py_DECREF(cells); Py_DECREF(pts);
+        return NULL;
+    }
 
     cudaFree(d_z); cudaFree(d_p); cudaFree(d_diff); cudaFree(d_best);
     cudaFree(d_sig); cudaFree(d_out);

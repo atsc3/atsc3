@@ -35,7 +35,7 @@ def demap_llr(cells, points, mod_order, block=None):
     if _gpu_demap is None:
         raise RuntimeError(
             "gpubindings.demap is not built; install it with "
-            "`pip install ./gpubindings` on a host with the CUDA toolkit"
+            "`make install-gpu` on a host with the CUDA toolkit"
         )
     z = np.ascontiguousarray(cells, dtype=np.complex128).ravel()
     pts = np.ascontiguousarray(points, dtype=np.complex128).ravel()

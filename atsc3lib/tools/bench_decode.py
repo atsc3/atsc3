@@ -85,13 +85,24 @@ def main(argv=None):
                     help='fixture geometry .json')
     ap.add_argument('--workers', default='1,2,4,8',
                     help='comma-separated FEC thread counts to sweep')
+    ap.add_argument('--gpu', default='auto', choices=['auto', 'on', 'off'],
+                    help='select the optional CUDA backend (GPU path ignores '
+                         '--workers; see tools/bench_live for the stage split)')
     ap.add_argument('--repeats', type=int, default=3,
                     help='repeats per per-stage measurement (best-of)')
     ap.add_argument('-v', '--verbose', action='store_true')
     args = ap.parse_args(argv)
 
+    os.environ['ATSC3LIB_GPU'] = args.gpu
+    from atsc3lib import accelerator
+    accelerator._probe.cache_clear()
+    if args.gpu == 'on':
+        accelerator.require()
+
     logging.basicConfig(level=logging.DEBUG if args.verbose
                         else logging.INFO, format='%(levelname)s %(message)s')
+    print(f"backend: {'GPU' if accelerator.available() else 'CPU'} "
+          f"(ATSC3LIB_GPU={args.gpu})")
 
     if not os.path.exists(args.fixture):
         LOGGER.error('fixture not found: %s', args.fixture)
@@ -132,7 +143,8 @@ def main(argv=None):
     for w in [int(x) for x in args.workers.split(',') if x.strip()]:
         os.environ['ATSC3LIB_FEC_THREADS'] = str(w)
         _, t = _time(lambda: decode_plp_from_pool(pool, plp,
-                                                  max_iterations=100))
+                                                  max_iterations=100),
+                     repeats=max(2, args.repeats))
         print(f'  decode @ {w:2d} worker(s) {t:8.3f} s')
     del os.environ['ATSC3LIB_FEC_THREADS']
     return 0

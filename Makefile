@@ -4,14 +4,17 @@
 # root .venv holds the receiver stack editable: atsc3lib (which builds its own
 # compiled kernels: LDPC + BCH, max-log demapper, frequency interleaver), the
 # separate sdrbindings (SDRplay/SoapySDR) and ac4bindings (AC-4) extensions,
-# and the optional openatsc3-pki crypto library.
+# the optional gpubindings CUDA extension (GPU boxes only), and the optional
+# openatsc3-pki crypto library.
 #
 #   make              install the receiver stack (scoped: NO Django/PostgreSQL)
 #   make install-all  install every package incl. the openatsc3-ca Django app
+#   make install-gpu  install the receiver stack with the optional CUDA kernels
 #   make test         run the atsc3lib test suite (includes the C kernels)
 #   make test-all     run every package's test suite
 #   make test-ac4     ac4bindings (AC-4) tests
 #   make test-sdr     sdrbindings (SoapySDR) tests
+#   make test-gpu     gpubindings CUDA tests (skipped without a GPU)
 #   make test-pki     openatsc3-pki crypto tests (no Django/DB)
 #   make test-ca      openatsc3-ca Django + PostgreSQL CA tests (Python 3.12)
 #   make ca-venv      create the Python 3.12 venv the CA app needs
@@ -28,8 +31,8 @@ UV ?= uv
 RUN ?= $(UV) run --no-sync
 CA_PYTHON ?= openatsc3-ca/.venv-ca/bin/python
 
-.PHONY: all install install-all test test-all test-ac4 test-sdr test-pki test-ca \
-        ca-venv ca-migrate docs check clean
+.PHONY: all install install-all install-gpu test test-all test-ac4 test-sdr \
+        test-gpu test-pki test-ca ca-venv ca-migrate docs check clean
 
 all: install
 
@@ -37,18 +40,24 @@ install:
 	$(UV) sync --package atsc3lib --extra pki --group dev
 
 install-all:
-	$(UV) sync --all-packages
+	$(UV) sync --all-packages --no-install-package gpubindings
+
+install-gpu:
+	ATSC3_CUDA_REQUIRED=1 $(UV) sync --package atsc3lib --extra gpu --extra pki --group dev
 
 test:
 	$(RUN) pytest atsc3lib/tests -q
 
-test-all: test test-ac4 test-sdr test-pki
+test-all: test test-ac4 test-sdr test-gpu test-pki
 
 test-ac4:
 	$(RUN) pytest ac4bindings/tests -q
 
 test-sdr:
 	$(RUN) pytest sdrbindings/tests -q
+
+test-gpu:
+	$(RUN) pytest gpubindings/tests -q
 
 test-pki:
 	$(RUN) pytest openatsc3-pki/tests -q

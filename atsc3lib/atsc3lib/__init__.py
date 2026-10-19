@@ -65,6 +65,7 @@ from . import audio
 from . import mux
 from . import gz
 from . import live
+from . import accelerator
 from . import signaling_fec
 from . import security
 from . import ofdm
@@ -100,6 +101,7 @@ from .receiver import (
 )
 
 __all__ = [
+    "accelerator",
     # capture / front-end
     "capture",
     "resample_iq",

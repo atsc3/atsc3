@@ -20,9 +20,12 @@ What you need
 * A TV antenna aimed at an ATSC 3.0 transmitter.  In the Washington DC DMA
   the reference signal is **RF33 / 587 MHz** (WHUT mux, BSID 540).
 * Python 3.10-3.13 and a C toolchain.
+* For **live** reception, an NVIDIA GPU with >= ~500 GB/s memory bandwidth
+  (see :doc:`live-streaming`); the receiver runs without one, just below real
+  time.
 
-See :doc:`sdrplay` for front-end setup and :doc:`live-streaming` before
-planning a *live* (real-time) deployment.
+See :doc:`sdrplay` for front-end setup and :doc:`live-streaming` for host
+sizing and the live (real-time) pipeline.
 
 System prerequisites
 --------------------
@@ -55,8 +58,20 @@ editable:
 ``make`` syncs ``atsc3lib`` plus its declared dependencies ``sdrbindings``
 and ``ac4bindings`` and the optional ``openatsc3-pki`` library, and compiles
 the C kernels (LDPC + BCH, max-log demapper, frequency interleaver) as
-``atsc3lib._bindings``.  The compiled kernels are **required**, not optional
-accelerators.
+``atsc3lib._bindings``.  These C kernels are **required**; the optional CUDA
+accelerators are a separate workspace member installed with
+``make install-gpu``.
+
+For live throughput, add the optional CUDA kernels:
+
+.. code-block:: bash
+
+   make install-gpu
+
+That syncs the ``gpu`` extra and requires ``nvcc``.  A normal ``make`` on a
+host without the CUDA toolkit is unchanged.  At runtime,
+``ATSC3LIB_GPU=auto`` (default) uses the GPU when present and falls back to the
+C kernels; ``ATSC3LIB_GPU=off`` forces the CPU path.
 
 The default install deliberately leaves out the ``openatsc3-ca`` Django app;
 use ``make install-all`` if you want it.  The PKI track (create a CA, issue a
@@ -70,6 +85,13 @@ Verify the install
 
    make check       # byte-compile every Python source
    make test        # the atsc3lib suite (includes the compiled kernels)
+   make test-gpu    # CUDA differential tests (skipped without a GPU)
+
+Measure the accelerated receive chain on this host:
+
+.. code-block:: bash
+
+   .venv/bin/python -m tools.bench_live --gpu on --frames 32
 
 Capture IQ
 ----------
@@ -127,12 +149,14 @@ The bounded live loop
 .. code-block:: bash
 
    atsc3-live --file out/capture.iq --plp 16 --units 12 --max-frames 1
-   atsc3-live --freq 587e6 --plp 0                 # live SDRplay
+   atsc3-live --pipelined --fec-async --freq 587e6 --plp 1
 
 ``atsc3-live`` runs the same receive chain on finite windows from a live
 SDRplay or a saved capture.  It never scans unbounded: each run tries a
 bounded number of acquisition windows and a miss advances to the next
-(A/322 7.2.2.2).  **It does not yet keep up with the air rate** — see
+(A/322 7.2.2.2).  With a supported GPU, ``--pipelined --fec-async`` overlaps
+the next frame's pool build with the current frame's FEC and meets the live
+frame budget in the stage benchmark; the on-air proof is still pending.  See
 :doc:`live-streaming`.
 
 Python API
@@ -175,7 +199,8 @@ Next steps
 ----------
 
 * :doc:`sdrplay` — front-end setup, gain, and troubleshooting.
-* :doc:`live-streaming` — current live-reception status and host requirements.
+* :doc:`live-streaming` — host sizing, the live frame budget, the pipeline,
+  and how to measure.
 * :doc:`pki-transmission` — create a CA, issue a certificate, and transmit and
   verify a signed frame.
 * :doc:`python-api` — the Python entry points.

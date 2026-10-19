@@ -21,11 +21,24 @@ try:
 except ImportError:
     _gpu_ldpc = None
 
-__all__ = ["LDPCDecoder", "decode_ldpc", "available"]
+__all__ = ["LDPCDecoder", "decode_ldpc", "available", "device_count"]
 
 
 def available() -> bool:
     return _gpu_ldpc is not None
+
+
+def device_count() -> int:
+    """Visible CUDA devices (0 when the driver or a device is absent)."""
+    return 0 if _gpu_ldpc is None else int(_gpu_ldpc.device_count())
+
+
+def _require_built() -> None:
+    if _gpu_ldpc is None:
+        raise RuntimeError(
+            "gpubindings.ldpc is not built; install it with "
+            "`make install-gpu` on a host with the CUDA toolkit"
+        )
 
 
 def _var_major(check_idx: np.ndarray, check_mask: np.ndarray, n: int):
@@ -66,11 +79,7 @@ class LDPCDecoder:
     """
 
     def __init__(self, check_idx, check_mask, n, edge_var=None):
-        if _gpu_ldpc is None:
-            raise RuntimeError(
-                "gpubindings.ldpc is not built; install it with "
-                "`pip install ./gpubindings` on a host with the CUDA toolkit"
-            )
+        _require_built()
         self.n = int(n)
         self.check_idx = np.ascontiguousarray(check_idx, dtype=np.int32)
         self.check_mask = np.ascontiguousarray(check_mask, dtype=np.uint8)
@@ -81,7 +90,27 @@ class LDPCDecoder:
             self.check_idx, self.check_mask, self._var_start, self._var_m
         )
 
-    def decode(self, channel, max_iter=50, alpha=0.75):
+    def decode_many(self, channels, max_iter=50, alpha=0.75):
+        """Decode ``(B, n)`` codewords with one enqueue per row and one sync.
+
+        Same result as decoding each row with :meth:`decode`; the single-block
+        kernel already fills the device, so the saving is the per-call host
+        sync and copy rather than more parallelism.
+        """
+        chan = self._batch_channels(channels)
+        return _gpu_ldpc.decode_many(
+            self._handle, chan, int(max_iter), float(alpha)
+        )
+
+    def _batch_channels(self, channels) -> np.ndarray:
+        chan = -np.ascontiguousarray(channels, dtype=np.float32)
+        if chan.ndim != 2 or chan.shape[1] != self.n:
+            raise ValueError(
+                f"channels must be (B, {self.n}), got {chan.shape}"
+            )
+        return chan
+
+    def decode(self, channel, max_iter=50, alpha=0.75, return_syndrome=False):
         """Decode ``channel`` in the library LLR convention.
 
         Args:
@@ -90,22 +119,34 @@ class LDPCDecoder:
                 negated internally to the L' domain the kernel works in.
             max_iter: belief-propagation iteration cap.
             alpha: normalized min-sum scaling (0 < alpha <= 1).
+            return_syndrome: also return the number of unsatisfied parity
+                checks of the final hard decision.
 
         Returns:
-            ``(uint8[n] hard bits, converged: bool)``.
+            ``(uint8[n] hard bits, converged: bool)``, plus ``n_unsat`` when
+            ``return_syndrome``.
         """
         chan = -np.ascontiguousarray(channel, dtype=np.float32).ravel()
         if chan.size != self.n:
             raise ValueError(
                 f"channel length {chan.size} != graph n {self.n}"
             )
-        return _gpu_ldpc.decode(self._handle, chan, int(max_iter), float(alpha))
+        hard, converged, unsat = _gpu_ldpc.decode(
+            self._handle, chan, int(max_iter), float(alpha)
+        )
+        if return_syndrome:
+            return hard, converged, unsat
+        return hard, converged
 
     def __del__(self):
         handle = getattr(self, "_handle", None)
-        if handle is not None and _gpu_ldpc is not None:
-            _gpu_ldpc.destroy(handle)
-            self._handle = None
+        if handle is None or _gpu_ldpc is None:
+            return
+        destroy = getattr(_gpu_ldpc, "destroy", None)
+        if destroy is None:
+            return
+        destroy(handle)
+        self._handle = None
 
 
 def decode_ldpc(channel, check_idx, check_mask, edge_var=None,

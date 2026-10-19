@@ -1,5 +1,9 @@
 # Hardware target — single-box live receiver (CPU + GPU)
 
+**Documentation:** ``docs/live-streaming.rst`` is the doc-facing summary of this
+file (host spec, candidate table, measured prototype and live pipeline).  This
+file remains the engineering record with the full derivation.
+
 Decision recorded 2026-10-05 (revised same day: 8 cores + RTX 5070).  Goal:
 sub-second (ideally true-live < 247 ms) decode of the RF33 256QAM PLP on one
 machine, with the SDRplay RSP1B and the `atsc3lib` receiver.  See
@@ -214,3 +218,52 @@ demap deltas are host run-to-run variance, not improvements).
 - GPU accelerates demap + LDPC + BCH only.  The serial CPU floors above were
   fixed separately (2026-10-16/17); the GPU removes the FEC wall, which with them
   done is now essentially the whole frame.
+
+## Prototype measured 2026-10-18 (rented RTX 2080 Ti)
+
+The optional `gpubindings` package was built on a rented 2080 Ti (sm_75,
+CUDA 12.8) and wired into `atsc3lib` behind `ATSC3LIB_GPU=auto|on|off`.  It is
+a workspace member (`uv sync --package atsc3lib --extra gpu`, or `make
+install-gpu`); a host without `nvcc` still installs it, but without the CUDA
+kernels, so `available()` is False and the CPU path runs.  The CPU/C path
+remains the required fallback; enabling the GPU leaves the decoded RF33 PLP-1
+packets byte-identical (117/117).
+
+What landed for the live path:
+
+- `atsc3lib/accelerator.py` -- lazy optional seam; no import on a CPU-only host.
+- Batched demap over all 117 FEC blocks (one call, per-block `sigma2`) and
+  `decode_many` LDPC (one enqueue per codeword, one device sync).  Fully
+  merged and grouped single-launch variants were measured, found not faster
+  (one 64K codeword already fills the GPU), and removed; the saving is the
+  per-call host sync/copy, not more parallelism.
+- BCH zero-error fast path: packed GF(2) syndrome masks over the whole block
+  matrix, falling back to the existing BM/Chien kernel on a non-zero syndrome.
+  RF33 frames leave BCH with 0 errors, so this is the receive-path case:
+  **~16 ms/frame instead of ~300 ms** for 117 blocks.
+- Pool build: persistent worker pool, parallel FFT chunks, and **two** workers
+  for per-symbol extraction.  Twelve workers are slower (92 ms vs 36 ms for the
+  symbol loop) because that routine is short NumPy calls; the C FEC kernels
+  still use the full CPU count.
+- `LiveReceiver.run_pipelined(fec_async=True)` runs pool build for frame N+1 on
+  a bounded worker while frame N's FEC runs on the GPU.  `atsc3-live
+  --pipelined --fec-async` selects it.
+
+Measured on the 2080 Ti node (`tools/bench_live`, RF33 subframe-1 PLP-1,
+256QAM 11/15, 117 blocks, 16 frames):
+
+| Stage | Time |
+|---|---|
+| pool build | 65-84 ms/frame |
+| FEC decode (GPU) | 175 ms/frame |
+| serial total | 260-268 ms/frame |
+| overlapped | **193-198 ms/frame** |
+| frame period | 247.1 ms |
+
+Sustained live is reached on this prototype card, with ~50 ms margin.  The GPU
+FEC split is demap ~32 ms, LDPC ~40-50 ms (16-iteration fast pass; two blocks
+need the full ladder), BCH ~16 ms, and ~30 ms of host-side normalisation,
+interleave and packet assembly.
+
+Caveat: this node has no SDR, so the gate here is the RF33 fixture plus stage
+timing, not an on-air run.  The RSP1B rig still has to prove the live loop.

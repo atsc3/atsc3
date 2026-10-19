@@ -341,6 +341,13 @@ def live_main(argv=None):
     parser.add_argument('--outdir', default=None,
                         help='write reassembled media/audio/A-V files here '
                              '(default: do not write media)')
+    parser.add_argument('--pipelined', action='store_true',
+                        help='run continuously with capture overlapped on decode')
+    parser.add_argument('--fec-async', action='store_true',
+                        help='overlap the next frame\'s pool build with this '
+                             'frame\'s FEC (implies --pipelined)')
+    parser.add_argument('--network-async', action='store_true',
+                        help='run ALP/IP/LLS on its own bounded worker')
 
     args = parser.parse_args(argv)
 
@@ -377,7 +384,12 @@ def live_main(argv=None):
     receiver.on_streams = observe
     if args.outdir:
         sink = LiveMediaSink(args.outdir)
-    receiver.run(max_windows=args.units)
+    if args.pipelined or args.fec_async or args.network_async:
+        receiver.run_pipelined(
+            max_windows=args.units, network_async=args.network_async,
+            fec_async=args.fec_async)
+    else:
+        receiver.run(max_windows=args.units)
     print(f"windows={receiver.stats.windows} "
           f"acquisitions={receiver.stats.acquisitions} "
           f"frames={receiver.stats.frames_decoded} "

@@ -1,149 +1,310 @@
-Live Streaming and CPU/Host Requirements
-=========================================
+Live Reception and the Frame Budget
+===================================
 
-This page explains the state of **live (real-time) reception**: what works
-today, the frame budget it must meet, where the time actually goes, and what
-host hardware is likely to keep up.
+This page covers live (real-time) reception end to end: the frame budget,
+where the time goes, the CPU/GPU host requirements, the pipeline that meets the
+budget, and how to validate a host.  The engineering record with the full
+derivation is ``meta/HARDWARE-live-rig.md``; this page is the
+documentation-facing summary.
 
 .. important::
 
-   Live real-time throughput is **the one open receiver item**.  The bounded
-   live loop is correct and produces valid output, but on the reference host
-   it runs at roughly **9 seconds per frame against a 247 ms budget**.  Do not
-   plan a live deployment expecting a working real-time receiver today; this
-   page documents the measured baseline and the hardware rationale so a
-   deployment can be sized and the remaining acceleration work prioritised.
+   The accelerated receiver now meets the 247.1 ms frame period in the
+   fixture/stage benchmark: **193-198 ms/frame sustained** on a prototype
+   RTX 2080 Ti.  That is not yet an on-air proof — the prototype node had no
+   SDR — but the compute wall is gone.  The remaining work is the RSP1B live
+   run, tuning on the selected RTX 5070 host, and handling link margins.
+
+.. contents:: On this page
+   :local:
+   :depth: 2
 
 What works today
 ----------------
 
-The receive chain itself is complete and air-proven **offline**.  A saved
-capture decodes to playable 1920x1080 HEVC video with AC-4 audio, and the
-bounded live loop (:class:`atsc3lib.live.LiveReceiver`, ``atsc3-live``) runs
-the same chain on finite windows from a live SDRplay or a file.  What is
-missing is *speed*, not correctness or features.
-
-The bounded loop never scans: each run tries a bounded number of acquisition
-windows and a miss advances to the next (A/322 7.2.2.2).  That is the wire
-behaviour — it is the right shape for live reception; it simply needs the hot
-paths fast enough to fit the frame.
+The receive chain is complete and air-proven **offline**.  A saved capture
+decodes to playable 1920x1080 HEVC video with AC-4 audio.  The bounded live
+loop (:class:`atsc3lib.live.LiveReceiver`, ``atsc3-live``) runs the same chain
+on finite windows from a live SDRplay or a file, holds the L1 lock across
+windows, and never scans unbounded (A/322 7.2.2.2).
 
 The frame budget
------------------
+----------------
 
 One RF33 frame is **247.1 ms** — 1,708,032 main-rate samples at 6.144 MHz,
-bootstrap to bootstrap (measured on air).  Live processing means decoding a
-frame in less than that.  The acquisition search window is two A/322 7.2.2.2
-minimum frame periods (a 52.7 ms minimum on RF33); the budget to meet is the
-full-frame 247.1 ms.
+bootstrap to bootstrap.  Live reception means one frame per period,
+*sustained*; latency can be higher than one frame, throughput cannot.
 
-Measured baseline
------------------
+A 256QAM 11/15 PLP-1 frame carries 117 FEC blocks of 64,800 bits, and the
+demap + normalized-min-sum LDPC + BCH traffic is roughly **66.6 GB/frame** at
+100 iterations.  That is the number the GPU has to move.
 
-Measured on the RF33 subframe-1 PLP-1 fixture (256QAM-NUC 11/15, 64800-bit
-LDPC, 117 FEC blocks) on the reference host, an **Intel Core i5-4278U**
-(2 cores / 4 threads):
+The CPU side is not the FEC lever.  Once the GPU (or the threaded C kernels)
+owns FEC, the CPU runs acquisition, L1, the cell-pool build and the network
+stage.  High single-thread performance matters more than a large core count.
+
+Measured split
+--------------
+
+RF33 subframe-1 PLP-1, 256QAM-NUC 11/15, 64,800-bit LDPC, 117 blocks, on a
+rented **RTX 2080 Ti** host (Ryzen 9 5900X, 12-core quota), 2026-10-18:
 
 .. list-table::
    :header-rows: 1
-   :widths: 52 30 18
+   :widths: 34 24 42
 
    * - Stage
-     - Measured
-     - Per 117-block frame
-   * - Max-log demap (C kernel)
-     - ~170 ms/block (256QAM, 8100 cells)
-     - ~20 s
-   * - LDPC min-sum, converged
-     - 1.1 ms/block
-     - ~0.13 s
-   * - LDPC min-sum, 100 iterations, not converged
-     - 621 ms/block
-     - ~73 s per alpha try
-   * - Pool build (75 x 16K FFT + dense channel)
-     - ~1 s/subframe
-     - ~1 s
-   * - Whole frame (current code, 4-thread FEC pool)
+     - Time per frame
+     - Notes
+   * - Pool build
+     - 65-84 ms
+     - 2-worker threaded; 75 x 16K FFT + dense channel + cell extraction
+   * - Demap
+     - ~32 ms
+     - batched over all 117 blocks, per-block ``sigma2``
+   * - LDPC
+     - ~40-50 ms
+     - 16-iteration fast pass; two blocks take the full alpha ladder
+   * - BCH
+     - ~16 ms
+     - zero-error fast path (RF33 leaves BCH 0 errors)
+   * - Host assembly
+     - ~30 ms
+     - normalization, de-interleave, packet assembly
+   * - **FEC total**
+     - **~175 ms**
+     -
+   * - **Sustained, overlapped**
+     - **193-198 ms**
+     - pool build for frame N+1 overlaps frame N's FEC
+
+That is inside the 247.1 ms period with ~50 ms of margin.  The CPU-only
+fallback is correct but not live: roughly 0.6-0.8 s/frame on the same host.
+
+The live pipeline
+-----------------
+
+``LiveReceiver.run_pipelined`` already overlaps capture with decode.  Two
+additional stages close the remaining gap:
+
+* ``fec_async=True`` moves pool build + FEC to a bounded worker.  The reader
+  thread keeps extending the stream and building the next frame's pool while
+  the current frame's FEC runs on the GPU.
+* ``network_async=True`` runs the Baseband Packet -> ALP/IP/LLS stage on its
+  own bounded worker, overlapping frame N's network work with frame N+1.
+
+All queues are bounded, so a slow consumer back-pressures the source instead
+of buffering without limit.
+
+.. code-block:: bash
+
+   atsc3-live --pipelined --fec-async --freq 587e6 --plp 1
+   atsc3-live --pipelined --fec-async --network-async --file out/capture.iq --plp 16
+
+Why the GPU is bandwidth-bound, not VRAM-bound
+----------------------------------------------
+
+From the actual Tanner graphs:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 22 24 24
+
+   * - PLP
+     - Codeword
+     - Graph + workspace
+     - 117-block frame
+   * - PLP-1 256QAM 11/15, 64K
+     - n=64800, 284759 edges
+     - 4.55 MB
+     - ~0.53 GB
+   * - PLP-0 64QAM 11/15, 64K
+     - n=64800, 278999 edges
+     - 4.60 MB
+     - ~0.54 GB
+   * - PLP-16 QPSK 2/15, 16K
+     - n=16200, 45359 edges
+     - 0.90 MB
      - —
-     - ~9 s
 
-Where the time actually goes
------------------------------
+Even with the subframe FFT, channel state and double buffering the working set
+stays under 2 GB.  **8 GB of VRAM is ample; 12 GB is generous.**  Buy on
+memory bandwidth and bus width, not capacity.
 
-* The **LDPC alpha ladder** dominates.  ``DataPlpChain.decode_cells`` re-runs
-  the whole decode for each of ``ALPHA_LADDER = (1.0, 0.85, 0.75)`` until one
-  converges, so a non-converged block can cost up to ``3 x 621 ms``.  A
-  *converged* block is only 1.1 ms, so on a clean link the honest converged
-  frame cost is closer to ``117 x 1.1 ms + demap`` (~300 ms), not 9 s.  Most
-  of the observed 9 s is the alpha ladder plus Python orchestration.
-* The **pool-build loop is sequential** — a Python ``for`` over 75 symbols,
-  each a 16K FFT.  Batched as one 2-D FFT it is 74 ms on a single core.
-* The C kernels already release the GIL and independent FEC blocks are
-  threaded across cores, so scaling is available today.
+CPU
+---
 
-Why a many-thread CPU is the first answer
------------------------------------------
+The selected CPU is an **8-core / 16-thread** part with strong single-thread
+performance (Ryzen 7 7700X / 9700X class; a 6-core 7600X is the acceptable
+floor).  Sixteen cores are not the live lever once FEC is on the GPU.
 
-For a clean lighthouse link (74/74 PLP-0, 117/117 PLP-1 per frame), a
-16-core host should bring the converged frame under the 247 ms budget on CPU
-alone.  The earlier ~1000x gap is a *marginal-link* number (many-iteration
-LDPC), not the clean-link number.
+Recommended system:
 
-The recommended order of work is algorithmic first, threading second, GPU
-last:
+* 8 cores / 16 threads, high IPC
+* 32 GB DDR5, dual channel
+* NVMe for captures and media
+* USB 3.0 for the RSP1B
+* 750-850 W PSU with a modern GPU
 
-1. **Measure honestly first.**  Run all 117 blocks through the current
-   converged path and the single-alpha path and establish the real per-frame
-   wall time and its split.
-2. **Algorithmic LDPC fixes** (no new dependency): a single-alpha fast path
-   with a ladder fallback only when near convergence, plus early exit.
-3. **Batch the 75-symbol FFT** into one block FFT.
-4. **Thread / pipeline**: saturate FEC-block parallelism and pipeline frame
-   N+1 capture against frame N decode.
-5. **Only if 1-4 miss the budget**, prototype an optional GPU binding.
-6. **Then buy**, or stay CPU-only if step 2 already won.
+The pool build is **done and no longer a serial floor**.  The per-symbol
+extraction runs on a persistent worker pool (two workers; more workers are
+slower because each symbol is a short NumPy call), the FFT carrier cache is one
+batched 2-D transform over the subframe body, and the scattered-pilot reference
+sequence is cached by length.  Measured 65-84 ms/frame on the prototype host
+(Ryzen 9 5900X, 12-core quota); the same stage fell from 0.883 s to 0.176 s on
+the 2-core dev host.  With ``--fec-async`` it overlaps frame N's FEC and is off
+the critical path.
 
-Choosing a host CPU
--------------------
+The other per-frame CPU floors are also closed: ``DataPlpChain``/tables/plans
+are cached once per L1 lock, the lock is held across frames, and the A/322
+5.2.3 baseband scrambler is cached by length.  No further CPU-side optimization
+is required to meet 247.1 ms.  The dense per-symbol channel loop is still a
+threaded NumPy loop rather than fully vectorized; that is optional headroom,
+not required work.  The CPU-only path remains FEC-bound and is not live.
 
-Because the heavy work is FEC and demap, a GPU is **optional and last**; a
-large core count is also not the first lever.  Once FEC and demap are off the
-critical path, the CPU only runs acquisition, L1 and orchestration — all
-light.  Sizing guidance from the analysis:
+GPU
+---
 
-* **CPU-only (portable, cheaper).**  A mainstream 16-core desktop part (e.g. a
-  Ryzen 9 9950X-class chip) with 64 GB DDR5 is the CPU-only target.  The
-  measured converged frame is close to the budget at 16 cores; the wins in
-  step 2-4 above should put it comfortably inside 247 ms.
-* **GPU-assisted (CPU-fallback capable).**  A 16-core CPU plus a mid-range GPU
-  with **16 GB VRAM and 500+ GB/s** memory bandwidth (e.g. an RTX 4070-class
-  card) is the sweet spot for a *marginal* link.  The workload is bandwidth-
-  and SM-bound, not VRAM-bound; anything above that is wasted here.  The GPU
-  would be a ``try: import`` dispatch, never a required dependency, and
-  differential-tested against the C kernels exactly as they are tested against
-  NumPy.
+Selection rule: **>= ~500 GB/s on a >= 192-bit bus, 8 GB+ VRAM, current
+drivers.**  The rule sits ~1.85x above the raw 269.5 GB/s the traffic needs
+(66.6 GB / 247.1 ms) so a real kernel at 70-80% of peak plus the CPU
+remainder still fits.
 
-The RSP1B is a USB device, so the simplest architecture is **one box**: move
-the SDRplay to the host and let it do capture and decode.  A **split** setup —
-capture on one machine, ship IQ or equalised cell pools over LAN to a
-FEC/demap host — keeps ``sdrbindings`` where the radio is and the GPU
-dependency out of the capture path.
+.. list-table::
+   :header-rows: 1
+   :widths: 24 12 14 18 22 10
+
+   * - GPU
+     - VRAM
+     - Bus
+     - Bandwidth
+     - Worst case (100 it)
+     - Verdict
+   * - **RTX 5070**
+     - **12 GB**
+     - 192-bit GDDR7
+     - **672 GB/s**
+     - ~99 ms
+     - **value pick**
+   * - RTX 4070 Ti Super
+     - 16 GB
+     - 256-bit
+     - 672 GB/s
+     - ~99 ms
+     - equal bandwidth, dearer
+   * - RTX 5070 Ti
+     - 16 GB
+     - 256-bit GDDR7
+     - 896 GB/s
+     - ~74 ms
+     - premium new
+   * - RTX 4070 / 4070 Super
+     - 12 GB
+     - 192-bit
+     - 504 GB/s
+     - ~132 ms
+     - fine
+   * - (avoid) RTX 5060 Ti
+     - 16 GB
+     - **128-bit**
+     - 448 GB/s
+     - ~149 ms
+     - more VRAM, slower
+   * - (avoid) RTX 4060
+     - 8 GB
+     - 128-bit
+     - 272 GB/s
+     - ~245 ms
+     - at the budget edge
+   * - (avoid) RTX 4060 Ti
+     - 16 GB
+     - 128-bit
+     - 288 GB/s
+     - ~231 ms
+     - more VRAM, slower
+
+Worst case is 66.6 GB / bandwidth — 100% of peak and a zero CPU remainder, so
+it is a floor, not a prediction.
+
+**Selected configuration:** Ryzen 7 7700X (8c/16t) + RTX 5070 12 GB + 32 GB
+DDR5, USB 3.0 for the RSP1B.  The 12 GB 5070 matches the 16 GB 4070 Ti Super
+on bandwidth for less money, and the extra VRAM buys nothing here.
+
+**Turing is a stopgap.**  CUDA 13 dropped offline compilation below compute
+capability 7.5, so an RTX 2080 / 2080 Super (sm_75) still builds but has no
+forward room.  The 2026-10-18 prototype used a 2080 Ti (616 GB/s, below the
+selection rule) and still met the budget; the 5070 is the card to buy.
+
+Optional GPU install and backend selection
+------------------------------------------
+
+``gpubindings`` is a monorepo workspace member but remains an **optional
+install**: the required path is the C kernels in ``atsc3lib._bindings``.  On a
+host without ``nvcc`` the package installs without the CUDA kernels, and
+``available()`` is False so the CPU path runs.
+
+.. code-block:: bash
+
+   # GPU host (fails loudly if nvcc is missing)
+   make install-gpu
+
+   # equivalent
+   uv sync --package atsc3lib --extra gpu
+
+   # CPU-only host: the normal install is unchanged
+   make
+
+Backend selection is runtime, not build-time:
+
+.. code-block:: bash
+
+   ATSC3LIB_GPU=auto   # default: use the GPU when importable and a device exists
+   ATSC3LIB_GPU=on     # require it; raise when unavailable
+   ATSC3LIB_GPU=off    # never import gpubindings
+
+Validating a host
+-----------------
+
+.. code-block:: bash
+
+   .venv/bin/python -m tools.bench_live --gpu on --frames 32
+   .venv/bin/python -m tools.bench_decode --gpu on
+
+The live benchmark prints pool build, FEC, serial total and the overlapped
+sustained frame time, and exits non-zero when it misses 247.1 ms.  The decode
+benchmark reports the per-stage split for one frame.
+
+Validation status and what remains
+----------------------------------
+
+The GPU path is gated on the RF33 air fixture: 117/117 blocks converge and the
+decoded packets are byte-identical to the C/CPU path.  The differential CUDA
+tests live in ``gpubindings/tests`` and run with ``make test-gpu`` (skipped
+when no GPU is present).
+
+The remaining proof is on air:
+
+* **On-air live run** with the RSP1B on the selected host.  The prototype node
+  had no SDR, so the number above is the RF33 fixture plus stage timing, not a
+  radio run.
+* **Link-margin behaviour.**  The fixture is a clean 117/117 frame.  A
+  marginal link spends more LDPC iterations; the alpha ladder and early exit
+  limit the cost, but the sustained budget should be re-measured there.
+* **RTX 5070 tuning.**  Rebuild with ``ATSC3_CUDA_ARCH=sm_120`` and re-run
+  ``tools.bench_live``; more bandwidth should widen the margin.
 
 Summary
 -------
 
-* Offline capture-to-picture works end to end today.
-* Live reception is bounded and correct but **compute-bound**: ~9 s/frame vs
-  a 247 ms budget on the reference 2-core host.
-* The cheapest wins are algorithmic (LDPC alpha ladder, batched FFT), then
-  threading; a 16-core CPU is the likely CPU-only answer for a clean link.
-* A GPU is an optional accelerator for marginal links, not a requirement.
-
-This page summarises ``wiki/analyses/gpu-and-algo-speedups.md`` and
-``wiki/analyses/project-plan-status.md``.
+* Offline capture-to-picture works end to end.
+* The accelerated live path meets the 247.1 ms period in the stage benchmark:
+  **193-198 ms/frame sustained** on the prototype GPU.
+* The CPU-only path remains a correct fallback but is not live.
+* On-air validation on the RSP1B rig is the remaining proof.
 
 See also
 --------
 
-* :doc:`getting-started`
-* :doc:`sdrplay`
+* :doc:`getting-started` — install and first decode.
+* :doc:`sdrplay` — the RSP1B front end.
+* :doc:`python-api` — the live and accelerator entry points.

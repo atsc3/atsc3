@@ -1,14 +1,18 @@
 """Build the optional CUDA accelerators in ``gpubindings``.
 
-Deliberately **not** part of the uv workspace: the receiver must install and
-run on a machine with no CUDA toolkit, so ``gpubindings`` is a standalone
-optional package that call sites reach through ``try: import``.  The required
+``gpubindings`` is a monorepo workspace member, but the CUDA kernels are
+optional: the receiver must install and run on a machine with no toolkit, and
+every call site reaches this package through ``try: import``.  The required
 path stays the C kernels in ``atsc3lib._bindings``.
 
-Install on a GPU host with::
+A normal install on a host without ``nvcc`` succeeds and ships only the Python
+wrappers (``available()`` is then False, so the CPU path runs).  Set
+``ATSC3_CUDA_REQUIRED=1`` on a GPU host to make a missing toolkit a hard error.
 
-    pip install ./gpubindings
-    # or, in place:
+Build on a GPU host with::
+
+    uv sync --package atsc3lib --extra gpu     # or: make install-gpu
+    # in place:
     python setup.py build_ext --inplace
 
 The ``.cu`` translation unit carries both the kernels and the CPython glue, so
@@ -21,7 +25,9 @@ Architecture defaults to ``-arch=native`` (the build host's GPU).  Pin it with
 """
 
 import os
+import shutil
 import subprocess
+import sys
 import sysconfig
 from pathlib import Path
 
@@ -37,6 +43,9 @@ _CUDA_SOURCES = [
     "gpubindings/_gpu_ldpc.cu",
 ]
 
+_REQUIRED = os.environ.get("ATSC3_CUDA_REQUIRED", "").strip().lower() in (
+    "1", "on", "true", "yes")
+
 
 class _CudaBuildExt(build_ext):
     """Compile each ``.cu`` straight to an extension module with nvcc."""
@@ -45,6 +54,18 @@ class _CudaBuildExt(build_ext):
 
     def build_extensions(self):
         import numpy
+
+        if shutil.which("nvcc") is None:
+            message = (
+                "nvcc not found; building gpubindings without the optional "
+                "CUDA kernels. Install the CUDA toolkit and rerun with "
+                "ATSC3_CUDA_REQUIRED=1 to require them "
+                "(see meta/HARDWARE-live-rig.md)."
+            )
+            if _REQUIRED:
+                raise SystemExit(message)
+            print("warning: " + message, file=sys.stderr)
+            return
 
         python_include = sysconfig.get_paths()["include"]
         suffix = sysconfig.get_config_var("EXT_SUFFIX") or ".so"
@@ -69,14 +90,7 @@ class _CudaBuildExt(build_ext):
                 "-o", str(out.resolve()),
             ] + sources
             self.announce("nvcc " + " ".join(cmd), level=2)
-            try:
-                subprocess.run(cmd, check=True)
-            except FileNotFoundError:
-                raise SystemExit(
-                    "nvcc not found. gpubindings is optional: install it only "
-                    "on a host with the CUDA toolkit "
-                    "(see meta/HARDWARE-live-rig.md)."
-                )
+            subprocess.run(cmd, check=True)
 
 
 setup(

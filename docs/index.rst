@@ -30,6 +30,10 @@ The workspace is a small monorepo:
    * - ``ac4bindings``
      - C extension
      - AC-4 (ETSI TS 103 190) audio decoder kernels.
+   * - ``gpubindings``
+     - CUDA (optional)
+     - Optional CUDA demap + LDPC + BCH kernels for live throughput; the C
+       kernels remain the required fallback.
    * - ``openatsc3-pki``
      - Python (optional)
      - Own certificate authority, signed-signaling verification, and CENC
@@ -46,8 +50,9 @@ Start here
   and decode a real broadcast from the command line and from Python.
 * :doc:`sdrplay` — set up the SDRplay RSP1B front end (SDRplay API, SoapySDR,
   ``sdrbindings``), tune gain, and troubleshoot capture.
-* :doc:`live-streaming` — the current state of *live* (real-time) reception,
-  the frame budget, and what CPU/host is needed to keep up.
+* :doc:`live-streaming` — live (real-time) reception: the frame budget,
+  CPU/GPU requirements, the selected host, the pipeline, the measured
+  prototype, and how to validate a host.
 * :doc:`pki-transmission` — create a certificate authority, issue a
   broadcaster certificate, transmit a signed frame, and receive and verify it;
   includes rotating the receiver trust anchor (overlap).
@@ -65,9 +70,10 @@ Reference
 .. note::
 
    The receiver works **offline** end to end today: a saved capture decodes
-   to playable 1920x1080 HEVC video with AC-4 audio.  **Live real-time
-   throughput is the one open receiver item** — see :doc:`live-streaming`
-   before planning a live deployment.
+   to playable 1920x1080 HEVC video with AC-4 audio.  The accelerated live
+   path meets the 247 ms frame period in the stage benchmark on a prototype
+   GPU (193-198 ms/frame); the remaining proof is an on-air run on the RSP1B
+   rig.  See :doc:`live-streaming` before planning a live deployment.
 
 .. toctree::
    :maxdepth: 2

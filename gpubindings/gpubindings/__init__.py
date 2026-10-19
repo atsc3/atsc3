@@ -1,7 +1,9 @@
 """Optional CUDA accelerators for the ATSC 3.0 receiver.
 
-Never a required dependency.  The receiver's compiled C kernels
-(``atsc3lib._bindings``) are the required path and every call site reaches this
+A workspace member of the monorepo, but never a required dependency: a normal
+install on a host without the CUDA toolkit ships the Python wrappers only
+(``available()`` is False), and the receiver's compiled C kernels
+(``atsc3lib._bindings``) are the required path.  Every call site reaches this
 package through ``try: import``, so a machine with no GPU still runs -- it just
 runs slower.  See ``meta/HARDWARE-live-rig.md``.
 

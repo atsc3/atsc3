@@ -444,6 +444,48 @@ def _require_bootstrap_aligned(main: np.ndarray) -> None:
             "resample_iq(iq, MAIN_RATE_HZ) silently decodes to 0/N")
 
 
+def build_plp_frame_pool(result, structure: int, main: np.ndarray, target,
+                         subframe: int = 0, fine_timing: bool = False,
+                         cpe: bool = False):
+    """Build ``target``'s cell pool from an acquired main-rate frame.
+
+    The pool build (FFT, channel estimate, cell extraction) is CPU-only and
+    independent of the FEC decode, so a live loop can run it on one thread while
+    the previous frame's FEC runs on the GPU.  ``main`` has the same
+    frame-aligned, CFO-corrected requirement as :func:`decode_plp_frame`.
+    """
+    from .payload import build_cell_pool, build_data_symbol_pool, cpe_spec
+
+    _require_bootstrap_aligned(main)
+
+    g = subframe_geometry(result, subframe)
+    boot_span = int(round(spec.BOOTSTRAP_TOTAL_SAMPLES
+                          * spec.MAIN_RATE_HZ / spec.BOOTSTRAP_RATE_HZ))
+    dummy_start = _dummy_tail_start(result, subframe)
+    cpe_spec_value = cpe_spec(target, dummy_start) if cpe else None
+    if subframe == 0:
+        n_l1b = L1BasicCodec(
+            spec.PREAMBLE_STRUCTURE[structure].l1b_mode).n_cells
+        l1_cells = n_l1b + result.l1_basic.l1_detail_total_cells
+        return build_cell_pool(
+            main, boot_span, g['fft'], g['gi'], g['noc'], g['dx'], g['dy'],
+            g['n_data_symbols'], sbs_symbols=g['sbs'],
+            preamble_structure=structure, l1_cells=l1_cells,
+            pattern=g['pattern'], sbs_null=g['sbs_null'],
+            preamble_num_symbols=g['n_preamble_symbols'],
+            preamble_reduced_carriers=(
+                result.l1_basic.preamble_reduced_carriers),
+            l1b_cells=n_l1b, fi_enabled=g['fi_enabled'],
+            fine_timing_enabled=fine_timing, cpe=cpe_spec_value)
+    t0 = boot_span + _subframe_start_offset(result)
+    return build_data_symbol_pool(
+        main, t0, g['fft'], g['gi'], g['noc'], g['dx'], g['dy'],
+        g['n_data_symbols'], sbs_symbols=g['sbs'], pattern=g['pattern'],
+        sbs_null=g['sbs_null'], cred_coeff=g['cred'],
+        fi_offset=g['fi_offset'], fi_enabled=g['fi_enabled'],
+        fine_timing_enabled=fine_timing, cpe=cpe_spec_value, dense=True)
+
+
 def decode_plp_frame(result, structure: int, main: np.ndarray, target,
                      subframe: int = 0, max_iterations: int = 100,
                      fine_timing: bool = False, cpe: bool = False):
@@ -461,35 +503,12 @@ def decode_plp_frame(result, structure: int, main: np.ndarray, target,
     ``result`` and ``structure`` carry the already-decoded L1 configuration, so
     a live loop can lock once and decode successive frames without re-acquiring.
     """
-    from .payload import decode_subframe0_plp, decode_subframe_plp
+    from .payload import decode_plp_from_pool
 
-    _require_bootstrap_aligned(main)
-
-    g = subframe_geometry(result, subframe)
-    boot_span = int(round(spec.BOOTSTRAP_TOTAL_SAMPLES
-                          * spec.MAIN_RATE_HZ / spec.BOOTSTRAP_RATE_HZ))
-    dummy_start = _dummy_tail_start(result, subframe)
-    if subframe == 0:
-        n_l1b = L1BasicCodec(
-            spec.PREAMBLE_STRUCTURE[structure].l1b_mode).n_cells
-        l1_cells = n_l1b + result.l1_basic.l1_detail_total_cells
-        return decode_subframe0_plp(
-            main, boot_span, g['fft'], g['gi'], g['noc'], g['dx'], g['dy'],
-            g['n_data_symbols'], g['sbs'], preamble_structure=structure,
-            l1_cells=l1_cells, plp=target, max_iterations=max_iterations,
-            pattern=g['pattern'], sbs_null=g['sbs_null'],
-            preamble_num_symbols=g['n_preamble_symbols'],
-            preamble_reduced_carriers=result.l1_basic.preamble_reduced_carriers,
-            l1b_cells=n_l1b, fi_enabled=g['fi_enabled'],
-            fine_timing_enabled=fine_timing, cpe=cpe, dummy_start=dummy_start)
-    t0 = boot_span + _subframe_start_offset(result)
-    return decode_subframe_plp(
-        main, t0, g['fft'], g['gi'], g['noc'], g['dx'], g['dy'],
-        g['n_data_symbols'], g['sbs'], plp=target,
-        max_iterations=max_iterations, pattern=g['pattern'],
-        sbs_null=g['sbs_null'], cred_coeff=g['cred'],
-        fi_offset=g['fi_offset'], fi_enabled=g['fi_enabled'],
-        fine_timing_enabled=fine_timing, cpe=cpe, dummy_start=dummy_start)
+    pool = build_plp_frame_pool(
+        result, structure, main, target, subframe=subframe,
+        fine_timing=fine_timing, cpe=cpe)
+    return decode_plp_from_pool(pool, target, max_iterations=max_iterations)
 
 
 def decode_first_plp_payload(iq_main: np.ndarray, fs_main: float,

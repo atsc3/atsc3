@@ -111,3 +111,23 @@ class TestDecode:
         cw[rng.choice(len(cw), 12, replace=False)] ^= 1
         out, nerr, ok = bch.decode(cw)
         assert ok and np.array_equal(out, msg)
+
+    @pytest.mark.parametrize('n,kpayload', [(16200, 5000), (64800, 20000)])
+    def test_batch_matches_single(self, n, kpayload):
+        # The zero-error fast path and the per-row fallback must return
+        # exactly what decode() returns.
+        bch = BCHCode(n)
+        rng = np.random.default_rng(n)
+        msg = rng.integers(0, 2, kpayload, dtype=np.uint8)
+        cw = np.array(bch.encode(msg))
+        rows = [cw]
+        for nerr in (1, 6, 12):
+            rx = cw.copy()
+            rx[rng.choice(len(rx), nerr, replace=False)] ^= 1
+            rows.append(rx)
+        got = bch.decode_batch(np.stack(rows))
+        for i, row in enumerate(rows):
+            ref = bch.decode(row)
+            assert np.array_equal(got[i][0], ref[0])
+            assert got[i][1] == ref[1]
+            assert bool(got[i][2]) == bool(ref[2])

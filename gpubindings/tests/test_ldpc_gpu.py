@@ -86,6 +86,25 @@ def test_non_converging_channel_agrees(rate, n):
     assert np.array_equal(h_c, h_g)
 
 
+@pytest.mark.parametrize("rate,n", [(11, 64800), (2, 16200)])
+def test_decode_many_matches_c(rate, n):
+    codec = _codec(rate, n)
+    rng = np.random.default_rng(rate * 31 + n)
+    base, _cw = _clean_channel(codec, rng)
+    batch = np.stack([
+        (base + rng.normal(0.0, 2.0, base.size)).astype(np.float32)
+        for _ in range(4)])
+    dec = LDPCDecoder(codec.check_idx, codec.check_mask, codec.n,
+                      codec.edge_var)
+    hard, conv, unsat = dec.decode_many(batch, 50, 0.75)
+    for i in range(batch.shape[0]):
+        h_c, conv_c = c_decode(batch[i], codec.check_idx, codec.check_mask,
+                               codec.edge_var, 50, 0.75)
+        assert np.array_equal(hard[i], h_c)
+        assert bool(conv[i]) == bool(conv_c)
+        assert int(unsat[i]) == int(codec._syndrome_unsatisfied(h_c).sum())
+
+
 def test_channel_length_validated():
     codec = _codec(11, 16200)
     dec = LDPCDecoder(codec.check_idx, codec.check_mask, codec.n, codec.edge_var)

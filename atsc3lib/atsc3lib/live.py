@@ -194,6 +194,9 @@ class LiveConfig:
     #: Bounded depth of the ALP/IP/LLS pipeline queue when the network stage runs
     #: off the decode thread (:meth:`LiveReceiver.run_pipelined`).
     network_queue: int = 8
+    #: Bounded depth of the pool-build/FEC queue when that stage runs off the
+    #: reader thread (``run_pipelined(fec_async=True)``).
+    fec_queue: int = 2
 
     def __post_init__(self):
         # Bounds must be finite; a non-positive value would mean "unbounded".
@@ -203,6 +206,8 @@ class LiveConfig:
             raise ValueError("relock bounds must be >= 1")
         if self.network_queue < 1:
             raise ValueError("network_queue must be >= 1")
+        if self.fec_queue < 1:
+            raise ValueError("fec_queue must be >= 1")
         if not (spec.MIN_FRAME_LENGTH_S <= self.acquire_window_s
                 <= spec.MAX_FRAME_LENGTH_S * DEFAULT_MAX_WINDOWS):
             raise ValueError("acquire_window_s out of the spec frame range")
@@ -297,6 +302,64 @@ class _NetworkStage:
         return self._n_streams
 
 
+class _FecStage:
+    """CPU pool build + GPU/CPU FEC on a bounded worker queue.
+
+    The live loop hands each complete frame to this stage and immediately goes
+    back to extending the stream and building the next frame's pool, so pool
+    build (CPU) overlaps the previous frame's FEC (GPU).  One worker keeps the
+    output order identical to the synchronous loop; the queue bounds the
+    backlog, so a slow FEC stage back-pressures the reader instead of buffering
+    without limit.  This is a documented thread boundary: failures are captured
+    and re-raised on :meth:`close`.
+    """
+
+    def __init__(self, receiver, maxsize: int = 2):
+        import queue as _queue
+        import threading
+        self._q: "_queue.Queue" = _queue.Queue(maxsize=maxsize)
+        self._receiver = receiver
+        self._error = None
+        self._thread = threading.Thread(target=self._run, name="atsc3-fec",
+                                        daemon=True)
+        self._thread.start()
+
+    def submit(self, job) -> None:
+        self._q.put(job)              # blocks when full: bounded back-pressure
+
+    def _run(self):
+        from .payload import decode_plp_from_pool
+        from .receiver import build_plp_frame_pool
+
+        while True:
+            job = self._q.get()
+            if job is None:
+                break
+            (lock, structure, result, frame, target, subframe,
+             max_iterations) = job
+            try:
+                pool = build_plp_frame_pool(
+                    result, structure, frame, target, subframe=subframe)
+                payload = decode_plp_from_pool(
+                    pool, target, max_iterations=max_iterations)
+            except Exception as exc:  # noqa: BLE001 - re-raised on close()
+                self._error = exc
+                continue
+            lock.frames += 1
+            self._receiver.stats.frames_decoded += 1
+            if payload is not None:
+                lock.failures = 0
+                self._receiver._emit(payload)
+            else:
+                lock.failures += 1
+
+    def close(self) -> None:
+        self._q.put(None)
+        self._thread.join()
+        if self._error is not None:
+            raise self._error
+
+
 @dataclass
 class _Lock:
     """A held acquisition: the L1 config plus a continuous main-rate stream."""
@@ -340,6 +403,7 @@ class LiveReceiver:
         self._structure = None
         self._lock: Optional[_Lock] = None
         self._network: Optional[_NetworkStage] = None
+        self._fec: Optional[_FecStage] = None
         self._exhausted = False
 
     def _derotate(self, x: np.ndarray, cfo: float, base_index: int) -> np.ndarray:
@@ -425,15 +489,20 @@ class LiveReceiver:
             if bootstrap_lock_metric(frame) < 0.5:
                 lock.failures += 1          # drift/loss: force a re-lock
                 break
-            payload = decode_plp_frame(
-                lock.result, lock.structure, frame, target,
-                subframe=self.config.subframe,
-                max_iterations=self.config.max_iterations)
-            lock.frames += 1
-            lock.failures = 0
-            self.stats.frames_decoded += 1
-            if payload is not None:
-                self._emit(payload)
+            if self._fec is not None:
+                self._fec.submit((
+                    lock, lock.structure, lock.result, frame, target,
+                    self.config.subframe, self.config.max_iterations))
+            else:
+                payload = decode_plp_frame(
+                    lock.result, lock.structure, frame, target,
+                    subframe=self.config.subframe,
+                    max_iterations=self.config.max_iterations)
+                lock.frames += 1
+                lock.failures = 0
+                self.stats.frames_decoded += 1
+                if payload is not None:
+                    self._emit(payload)
             lock.frame_offset += period
             decoded += 1
         # Drop whole consumed frames, but never past the next decodable frame,
@@ -486,15 +555,19 @@ class LiveReceiver:
         return True
 
     def run_pipelined(self, max_windows: int = None, queue_depth: int = 2,
-                      network_async: bool = False) -> LiveStats:
+                      network_async: bool = False,
+                      fec_async: bool = False) -> LiveStats:
         """Continuous reception with capture and network overlapped on decode.
 
         A capture thread reads windows into a **bounded** queue while this
         thread runs the lock/decode state machine, so the next window's SDR read
         overlaps the current window's decode.  With ``network_async`` the
         Baseband Packet -> ALP/IP/LLS stage runs on its own bounded worker too,
-        overlapping frame N's network work with frame N+1's FEC.  Bounded by
-        ``max_windows`` and the two queue depths, so it never reads or buffers
+        overlapping frame N's network work with frame N+1's FEC.  With
+        ``fec_async`` the pool build and FEC decode move to a bounded worker,
+        so frame N+1's pool build (CPU) overlaps frame N's FEC (GPU) -- the
+        stage split that makes the 247 ms frame period sustainable.  Bounded by
+        ``max_windows`` and the queue depths, so it never reads or buffers
         without a limit.  The synchronous :meth:`run_once` path is unchanged.
         """
         import queue as _queue
@@ -508,6 +581,8 @@ class LiveReceiver:
                              * self.source.sample_rate)
         q: "_queue.Queue" = _queue.Queue(maxsize=queue_depth)
         stop = threading.Event()
+        if fec_async:
+            self._fec = _FecStage(self, maxsize=self.config.fec_queue)
         if network_async:
             self._network = _NetworkStage(self.on_streams, self.streams,
                                           maxsize=self.config.network_queue)
@@ -535,6 +610,9 @@ class LiveReceiver:
         finally:
             stop.set()
             thread.join()
+            if self._fec is not None:
+                self._fec.close()
+                self._fec = None
             if self._network is not None:
                 self._network.close()
                 self.stats.streams += self._network.n_streams

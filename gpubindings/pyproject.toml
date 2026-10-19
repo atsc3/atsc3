@@ -7,7 +7,14 @@ name = "gpubindings"
 version = "0.1.0"
 description = "Optional CUDA kernels for the ATSC 3.0 receiver"
 requires-python = ">=3.10,<3.14"
+license = {text = "Apache-2.0"}
 dependencies = ["numpy"]
 
 [project.optional-dependencies]
 test = ["pytest>=7.0"]
+
+[tool.setuptools]
+packages = ["gpubindings"]
+
+[tool.setuptools.package-data]
+gpubindings = ["*.cu", "*.cuh"]

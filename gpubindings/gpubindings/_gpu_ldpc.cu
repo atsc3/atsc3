@@ -23,8 +23,15 @@
  *
  * API (handle-based so the graph is uploaded once per lock, not per block):
  *     create(check_idx, check_mask, var_start, var_m) -> handle
- *     decode(handle, channel, max_iter, alpha) -> (uint8[n] hard, bool converged)
+ *     decode(handle, channel, max_iter, alpha) -> (uint8[n] hard, bool, unsat)
+ *     decode_many(handle, (B, n) channels, max_iter, alpha) -> three arrays
+ *     device_count() -> visible CUDA devices
  *     destroy(handle)
+ *
+ * decode_many enqueues one single-block kernel per codeword and syncs once; it
+ * shares the per-block buffers but keeps the graph and block geometry.  A
+ * merged single-launch kernel and a grouped variant were measured and are not
+ * faster (one 64K codeword already fills the GPU), so they were removed.
  *
  * Gate: gpubindings/tests/test_ldpc_gpu.py, hard bits identical to the C
  * kernel on real 64800/16200 codewords, plus the air gate
@@ -46,15 +53,7 @@
 
 namespace cg = cooperative_groups;
 
-static int _cuda_ok(cudaError_t err, const char *what)
-{
-    if (err != cudaSuccess) {
-        PyErr_Format(PyExc_RuntimeError, "%s: %s", what,
-                     cudaGetErrorString(err));
-        return 0;
-    }
-    return 1;
-}
+#include "_cuda_util.cuh"
 
 typedef struct {
     int n;
@@ -71,6 +70,17 @@ typedef struct {
     unsigned char *d_hard;
     int *d_flag;
     int *d_converged;
+    int *d_unsat;
+    int *d_last_unsat;
+    float *d_Mb;
+    float *d_totalb;
+    float *d_chanb;
+    unsigned char *d_hardb;
+    int *d_unsatb;
+    int *d_last_unsatb;
+    int *d_flagb;
+    int *d_convb;
+    int batch_capacity;
     int threads;
     int blocks;
 } ldpc_handle;
@@ -80,6 +90,7 @@ __global__ void ldpc_kernel(const int *check_idx, const unsigned char *check_mas
                             const int *var_start, const int *var_m,
                             const float *chan, float *M, float *total,
                             unsigned char *hard, int *flag, int *converged,
+                            int *unsat, int *last_unsat,
                             int max_iter, float alpha)
 {
     cg::grid_group grid = cg::this_grid();
@@ -89,6 +100,8 @@ __global__ void ldpc_kernel(const int *check_idx, const unsigned char *check_mas
     if (tid == 0) {
         *flag = 0;
         *converged = 0;
+        *unsat = 0;
+        *last_unsat = 0;
     }
     for (int i = tid; i < n; i += stride) {
         total[i] = chan[i];
@@ -111,11 +124,14 @@ __global__ void ldpc_kernel(const int *check_idx, const unsigned char *check_mas
         }
         if (acc) {
             atomicExch(flag, 1);
+            atomicAdd(unsat, 1);
         }
     }
     grid.sync();
     if (tid == 0) {
+        *last_unsat = *unsat;
         *converged = (*flag == 0) ? 1 : 0;
+        *unsat = 0;
         *flag = 0;
     }
     grid.sync();
@@ -194,15 +210,211 @@ __global__ void ldpc_kernel(const int *check_idx, const unsigned char *check_mas
             }
             if (acc) {
                 atomicExch(flag, 1);
+                atomicAdd(unsat, 1);
             }
         }
         grid.sync();
         if (tid == 0) {
+            *last_unsat = *unsat;
             *converged = (*flag == 0) ? 1 : 0;
+            *unsat = 0;
             *flag = 0;
         }
         grid.sync();
     }
+}
+
+static void _free_batch(ldpc_handle *h)
+{
+    if (h->d_Mb) { cudaFree(h->d_Mb); h->d_Mb = NULL; }
+    if (h->d_totalb) { cudaFree(h->d_totalb); h->d_totalb = NULL; }
+    if (h->d_chanb) { cudaFree(h->d_chanb); h->d_chanb = NULL; }
+    if (h->d_hardb) { cudaFree(h->d_hardb); h->d_hardb = NULL; }
+    if (h->d_unsatb) { cudaFree(h->d_unsatb); h->d_unsatb = NULL; }
+    if (h->d_last_unsatb) { cudaFree(h->d_last_unsatb); h->d_last_unsatb = NULL; }
+    if (h->d_flagb) { cudaFree(h->d_flagb); h->d_flagb = NULL; }
+    if (h->d_convb) { cudaFree(h->d_convb); h->d_convb = NULL; }
+    h->batch_capacity = 0;
+}
+
+static int _ensure_batch(ldpc_handle *h, int batch)
+{
+    if (batch <= h->batch_capacity) {
+        return 1;
+    }
+    _free_batch(h);
+    const size_t mrows = (size_t)h->n_checks * h->dmax;
+    int ok = 1;
+    ok &= _cuda_ok(cudaMalloc(&h->d_Mb, (size_t)batch * mrows * sizeof(float)),
+                   "batch M");
+    ok &= _cuda_ok(cudaMalloc(&h->d_totalb, (size_t)batch * h->n * sizeof(float)),
+                   "batch total");
+    ok &= _cuda_ok(cudaMalloc(&h->d_chanb, (size_t)batch * h->n * sizeof(float)),
+                   "batch chan");
+    ok &= _cuda_ok(cudaMalloc(&h->d_hardb,
+                              (size_t)batch * h->n * sizeof(unsigned char)),
+                   "batch hard");
+    ok &= _cuda_ok(cudaMalloc(&h->d_unsatb, (size_t)batch * sizeof(int)),
+                   "batch unsat");
+    ok &= _cuda_ok(cudaMalloc(&h->d_last_unsatb, (size_t)batch * sizeof(int)),
+                   "batch last unsat");
+    ok &= _cuda_ok(cudaMalloc(&h->d_flagb, (size_t)batch * sizeof(int)),
+                   "batch flag");
+    ok &= _cuda_ok(cudaMalloc(&h->d_convb, (size_t)batch * sizeof(int)),
+                   "batch conv");
+    if (!ok) {
+        _free_batch(h);
+        return 0;
+    }
+    h->batch_capacity = batch;
+    return 1;
+}
+
+static PyObject *decode_many(PyObject *self, PyObject *args, PyObject *kwds)
+{
+    (void)self;
+    static char *kwlist[] = {"handle", "channels", "max_iter", "alpha", NULL};
+    PyObject *cap, *chan_o;
+    int max_iter;
+    float alpha = 0.75f;
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "OOi|f", kwlist,
+                                     &cap, &chan_o, &max_iter, &alpha)) {
+        return NULL;
+    }
+    ldpc_handle *h = (ldpc_handle *)PyLong_AsVoidPtr(cap);
+    if (h == NULL) {
+        return NULL;
+    }
+    PyArrayObject *chan = (PyArrayObject *)PyArray_FROM_OTF(
+        chan_o, NPY_FLOAT32, NPY_ARRAY_IN_ARRAY);
+    if (chan == NULL) {
+        return NULL;
+    }
+    const long total = (long)PyArray_SIZE(chan);
+    if (total % h->n != 0) {
+        Py_DECREF(chan);
+        PyErr_SetString(PyExc_ValueError, "channel size not a multiple of n");
+        return NULL;
+    }
+    const int batch = (int)(total / h->n);
+    if (batch < 1) {
+        Py_DECREF(chan);
+        PyErr_SetString(PyExc_ValueError, "empty batch");
+        return NULL;
+    }
+    if (!_ensure_batch(h, batch)) {
+        Py_DECREF(chan);
+        return NULL;
+    }
+
+    npy_intp hdims[2] = { batch, h->n };
+    npy_intp bdims[1] = { batch };
+    PyArrayObject *hard = (PyArrayObject *)PyArray_SimpleNew(2, hdims, NPY_UINT8);
+    PyArrayObject *conv = (PyArrayObject *)PyArray_SimpleNew(1, bdims, NPY_BOOL);
+    PyArrayObject *unsat = (PyArrayObject *)PyArray_SimpleNew(1, bdims, NPY_INT32);
+    if (hard == NULL || conv == NULL || unsat == NULL) {
+        Py_XDECREF(hard); Py_XDECREF(conv); Py_XDECREF(unsat);
+        Py_DECREF(chan);
+        return NULL;
+    }
+
+    if (!_copy_h2d(h->d_chanb, PyArray_DATA(chan),
+                   (size_t)total * sizeof(float), "many chan")) {
+        Py_DECREF(chan); Py_DECREF(hard); Py_DECREF(conv); Py_DECREF(unsat);
+        return NULL;
+    }
+
+    const long mrows = (long)h->n_checks * h->dmax;
+    const int n = h->n, n_checks = h->n_checks, dmax = h->dmax;
+    const int *d_idx = h->d_check_idx;
+    unsigned char *d_msk = h->d_check_mask;
+    const int *d_vs = h->d_var_start;
+    const int *d_vm = h->d_var_m;
+
+    cudaError_t launch_err = cudaSuccess;
+    Py_BEGIN_ALLOW_THREADS
+    for (int b = 0; b < batch; ++b) {
+        const float *d_chan = h->d_chanb + (long)b * n;
+        float *d_M = h->d_Mb + (long)b * mrows;
+        float *d_total = h->d_totalb + (long)b * n;
+        unsigned char *d_hard = h->d_hardb + (long)b * n;
+        int *d_flag = h->d_flagb + b;
+        int *d_conv = h->d_convb + b;
+        int *d_unsat = h->d_unsatb + b;
+        int *d_last = h->d_last_unsatb + b;
+
+        void *kargs[] = {
+            (void *)&d_idx, (void *)&d_msk, (void *)&n_checks, (void *)&dmax,
+            (void *)&n, (void *)&d_vs, (void *)&d_vm, (void *)&d_chan,
+            (void *)&d_M, (void *)&d_total, (void *)&d_hard, (void *)&d_flag,
+            (void *)&d_conv, (void *)&d_unsat, (void *)&d_last,
+            (void *)&max_iter, (void *)&alpha
+        };
+
+        launch_err = cudaLaunchCooperativeKernel(
+            (void *)ldpc_kernel, dim3(h->blocks), dim3(h->threads), kargs, 0, 0);
+        if (launch_err != cudaSuccess) {
+            break;
+        }
+    }
+    if (launch_err == cudaSuccess) {
+        launch_err = cudaDeviceSynchronize();
+    }
+    Py_END_ALLOW_THREADS
+    if (!_cuda_ok(launch_err, "many launch/sync")) {
+        Py_DECREF(chan); Py_DECREF(hard); Py_DECREF(conv); Py_DECREF(unsat);
+        return NULL;
+    }
+    if (!_copy_d2h(PyArray_DATA(hard), h->d_hardb,
+                   (size_t)total * sizeof(unsigned char), "many hard")) {
+        Py_DECREF(chan); Py_DECREF(hard); Py_DECREF(conv); Py_DECREF(unsat);
+        return NULL;
+    }
+    int *h_conv = (int *)malloc((size_t)batch * sizeof(int));
+    int *h_unsat = (int *)malloc((size_t)batch * sizeof(int));
+    if (h_conv == NULL || h_unsat == NULL) {
+        free(h_conv); free(h_unsat);
+        Py_DECREF(chan); Py_DECREF(hard); Py_DECREF(conv); Py_DECREF(unsat);
+        return PyErr_NoMemory();
+    }
+    cudaError_t out_err;
+    Py_BEGIN_ALLOW_THREADS
+    out_err = cudaMemcpy(h_conv, h->d_convb, (size_t)batch * sizeof(int),
+                         cudaMemcpyDeviceToHost);
+    if (out_err == cudaSuccess) {
+        out_err = cudaMemcpy(h_unsat, h->d_last_unsatb,
+                             (size_t)batch * sizeof(int),
+                             cudaMemcpyDeviceToHost);
+    }
+    Py_END_ALLOW_THREADS
+    if (!_cuda_ok(out_err, "many results")) {
+        free(h_conv); free(h_unsat);
+        Py_DECREF(chan); Py_DECREF(hard); Py_DECREF(conv); Py_DECREF(unsat);
+        return NULL;
+    }
+    for (int b = 0; b < batch; ++b) {
+        *(unsigned char *)(PyArray_GETPTR1(conv, b)) =
+            (unsigned char)(h_conv[b] ? 1 : 0);
+        *(int *)(PyArray_GETPTR1(unsat, b)) = h_unsat[b];
+    }
+    free(h_conv); free(h_unsat);
+
+    Py_DECREF(chan);
+    return Py_BuildValue("NNN", hard, conv, unsat);
+}
+
+static PyObject *device_count(PyObject *self, PyObject *args)
+{
+    (void)self;
+    (void)args;
+    int count = 0;
+    cudaError_t err = cudaGetDeviceCount(&count);
+    if (err != cudaSuccess) {
+        cudaGetLastError();
+        count = 0;
+    }
+    return PyLong_FromLong(count);
 }
 
 static PyObject *create(PyObject *self, PyObject *args)
@@ -247,6 +459,8 @@ static PyObject *create(PyObject *self, PyObject *args)
     ok &= _cuda_ok(cudaMalloc(&h->d_hard, (size_t)h->n * sizeof(unsigned char)), "hard");
     ok &= _cuda_ok(cudaMalloc(&h->d_flag, sizeof(int)), "flag");
     ok &= _cuda_ok(cudaMalloc(&h->d_converged, sizeof(int)), "conv");
+    ok &= _cuda_ok(cudaMalloc(&h->d_unsat, sizeof(int)), "unsat");
+    ok &= _cuda_ok(cudaMalloc(&h->d_last_unsat, sizeof(int)), "last unsat");
     if (!ok) {
         Py_DECREF(idx); Py_DECREF(msk); Py_DECREF(vs); Py_DECREF(vm);
         return NULL;
@@ -295,6 +509,8 @@ static PyObject *destroy(PyObject *self, PyObject *args)
     cudaFree(h->d_M); cudaFree(h->d_total); cudaFree(h->d_chan);
     cudaFree(h->d_hard);
     cudaFree(h->d_flag); cudaFree(h->d_converged);
+    cudaFree(h->d_unsat); cudaFree(h->d_last_unsat);
+    _free_batch(h);
     free(h);
     Py_RETURN_NONE;
 }
@@ -333,9 +549,8 @@ static PyObject *decode(PyObject *self, PyObject *args, PyObject *kwds)
         return NULL;
     }
 
-    if (!_cuda_ok(cudaMemcpy(h->d_chan, PyArray_DATA(chan),
-                             (size_t)h->n * sizeof(float),
-                             cudaMemcpyHostToDevice), "chan")) {
+    if (!_copy_h2d(h->d_chan, PyArray_DATA(chan),
+                   (size_t)h->n * sizeof(float), "chan")) {
         Py_DECREF(chan); Py_DECREF(out);
         return NULL;
     }
@@ -352,6 +567,8 @@ static PyObject *decode(PyObject *self, PyObject *args, PyObject *kwds)
     unsigned char *d_hard = h->d_hard;
     int *d_flag = h->d_flag;
     int *d_conv = h->d_converged;
+    int *d_unsat = h->d_unsat;
+    int *d_last = h->d_last_unsat;
     const float *d_chan = h->d_chan;
     const int n_checks = h->n_checks, dmax = h->dmax, n = h->n;
 
@@ -359,7 +576,8 @@ static PyObject *decode(PyObject *self, PyObject *args, PyObject *kwds)
         (void *)&d_idx, (void *)&d_msk, (void *)&n_checks, (void *)&dmax,
         (void *)&n, (void *)&d_vs, (void *)&d_vm, (void *)&d_chan,
         (void *)&d_M, (void *)&d_total, (void *)&d_hard, (void *)&d_flag,
-        (void *)&d_conv, (void *)&max_iter, (void *)&alpha
+        (void *)&d_conv, (void *)&d_unsat, (void *)&d_last,
+        (void *)&max_iter, (void *)&alpha
     };
 
     cudaError_t err = cudaLaunchCooperativeKernel(
@@ -368,27 +586,44 @@ static PyObject *decode(PyObject *self, PyObject *args, PyObject *kwds)
         Py_DECREF(chan); Py_DECREF(out);
         return NULL;
     }
-    if (!_cuda_ok(cudaDeviceSynchronize(), "sync")) {
+    if (!_sync_device("sync")) {
         Py_DECREF(chan); Py_DECREF(out);
         return NULL;
     }
-    if (!_cuda_ok(cudaMemcpy(PyArray_DATA(out), h->d_hard,
-                             (size_t)h->n * sizeof(unsigned char),
-                             cudaMemcpyDeviceToHost), "hard")) {
+    if (!_copy_d2h(PyArray_DATA(out), h->d_hard,
+                   (size_t)h->n * sizeof(unsigned char), "hard")) {
         Py_DECREF(chan); Py_DECREF(out);
         return NULL;
     }
-    int conv = 0;
-    cudaMemcpy(&conv, h->d_converged, sizeof(int), cudaMemcpyDeviceToHost);
+    int conv = 0, unsat = 0;
+    cudaError_t res_err;
+    Py_BEGIN_ALLOW_THREADS
+    res_err = cudaMemcpy(&conv, h->d_converged, sizeof(int),
+                         cudaMemcpyDeviceToHost);
+    if (res_err == cudaSuccess) {
+        res_err = cudaMemcpy(&unsat, h->d_last_unsat, sizeof(int),
+                             cudaMemcpyDeviceToHost);
+    }
+    Py_END_ALLOW_THREADS
+    if (!_cuda_ok(res_err, "conv")) {
+        Py_DECREF(chan); Py_DECREF(out);
+        return NULL;
+    }
 
     Py_DECREF(chan);
-    return Py_BuildValue("NO", out, conv ? Py_True : Py_False);
+    return Py_BuildValue("NNN", out, PyBool_FromLong(conv),
+                         PyLong_FromLong(unsat));
 }
 
 static PyMethodDef methods[] = {
+    {"device_count", device_count, METH_NOARGS,
+     "Number of visible CUDA devices (0 when the driver is absent)."},
     {"create", create, METH_VARARGS, "Upload a Tanner graph; returns a handle."},
     {"decode", (PyCFunction)(void (*)(void))decode,
      METH_VARARGS | METH_KEYWORDS, "Normalized min-sum decode on the GPU."},
+    {"decode_many", (PyCFunction)(void (*)(void))decode_many,
+     METH_VARARGS | METH_KEYWORDS,
+     "Decode a batch as one enqueue per codeword, one sync."},
     {"destroy", destroy, METH_VARARGS, "Free a graph handle."},
     {NULL, NULL, 0, NULL}
 };
