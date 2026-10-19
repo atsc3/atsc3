@@ -110,20 +110,6 @@ print(sdrbindings.enumerate("rsp-open"))
   10 MS/s, 8 MHz, IFGR 44, RFGR 4. Other frequencies/rates use the computed
   fallback and are not air-proven; other RFGR values need their own captured
   front-end (`0x49`) sequence.
-- **PLP-1 256QAM** does not close on the open capture (0/117; vendor 117/117).
-  The gain/clipping part is fixed: RFGR 4 is `0x12df` (not `0x12ff`) and the
-  clean level is IFGR 44 (open RMS 0.373, 0.036% rails). The remaining
-  deficit is the **IQ image/delay**: circularity 0.0497 and lag-1 0.0181 vs.
-  the vendor API's corrected 0.00031/0.00236. The vendor applies DC/IQ/AGC
-  correction in software; the open driver only removes the prime-mean DC.
-- The `0x49` RFGR mapping is decoded (RFGR 0 `0x12ff`, RFGR 4 `0x12df`,
-  RFGR 9 `0x13ad` + LNA/mixer off); the remaining `0x49` bits, MW/FM/DAB
-  notches and bias-T are not semantically decoded. The 0x49 sequence is
-  replayed exactly for the validated rung.
-- The SoapySDR module (`driver=rsp-open`) is implemented and installed with
-  `make install-soapy`; `sdrbindings`, `atsc3-capture --driver rsp-open` and
-  `atsc3-live --driver rsp-open` use it. The direct `rsp-capture` CLI is still
-  the simplest clean-capture path.
 
 ## Protocol and evidence
 
