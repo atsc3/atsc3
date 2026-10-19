@@ -97,6 +97,56 @@ make clean        # remove build artefacts
 See [`atsc3lib/README.md`](atsc3lib/README.md) for the receiver itself: the
 decode chain, capture instructions, CLI usage, and the full command surface.
 
+## Releases
+
+GitHub releases are **tag-driven** by
+[`.github/workflows/release.yml`](.github/workflows/release.yml). Pushing an
+annotated `v*` tag runs the full CI suite, builds the release artifacts, and
+creates a **draft** GitHub release:
+
+- pure Python wheels: `openatsc3-pki`, `openatsc3-ca`
+- manylinux x86_64 wheels (CPython 3.10–3.13): `atsc3lib`, `ac4bindings`,
+  `sdrbindings` (SoapySDR is built in the manylinux container first)
+- `rsp-open` source and Intel binary tarballs (it is a C/SoapySDR project, not
+  a Python wheel; the Python Soapy wrapper is `sdrbindings`)
+- optional CUDA wheels for `gpubindings` for `sm_75` and `sm_120`
+- `SHA256SUMS` for the `rsp-open` tarballs
+
+The workflow reuses `ci.yml` through `workflow_call`, uses
+`softprops/action-gh-release` with `draft: true`, and grants
+`contents: write` to the release job. No local `gh` login is needed; Actions
+uses the repository `GITHUB_TOKEN`.
+
+To cut a release:
+
+```bash
+git switch main
+git pull --ff-only
+
+# Bump [project].version in the package pyproject files and docs/conf.py
+# to match the tag (currently all packages are 0.1.0).
+
+git tag -a v0.1.0 -m "v0.1.0 Intel release"
+git push origin v0.1.0
+```
+
+Then open the `Release` workflow run in GitHub Actions. When it succeeds, the
+`v0.1.0` draft release is created with the artifacts above. Review the assets,
+then publish it:
+
+```bash
+gh release edit v0.1.0 --draft=false
+```
+
+Do not move or recreate a published tag; use a new patch tag for a new build.
+
+PyPI publishing is separate from the GitHub draft release. Upload the pure and
+manylinux wheels plus the sdists with `uv publish` or `twine`, and keep the
+CUDA `gpubindings` wheels as a separate optional release asset. Runtime notes
+for the wheel set: `sdrbindings` links the external SoapySDR library;
+`openatsc3-ca` expects `OPENATSC3_CA_DATABASE_URL` (its `pgserver` test extra is
+Python 3.12-only); and `gpubindings` is the optional CUDA extra for `atsc3lib`.
+
 ## Repository layout notes
 
 - `spec/` (licensed standards PDFs), `raw/`, the `wiki/` knowledge base and
