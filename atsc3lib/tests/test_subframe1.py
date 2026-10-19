@@ -154,6 +154,17 @@ class TestDenseChannel:
                                       fft, noc)
             assert np.array_equal(cache[l], row)
 
+    def test_symbol_carriers_uses_t0(self):
+        # The batched cache must slice at the subframe's first symbol, not at
+        # the bootstrap.  This is the subframe-1 raw-capture regression: the
+        # fixture gate used t0=0, so the missing offset stayed hidden.
+        y, _H, (fft, gi, noc, _dx, _dy, _cp, _add) = self._symbols(n_sym=8)
+        offset = 137
+        padded = np.concatenate([np.zeros(offset, dtype=np.complex128), y])
+        expected = symbol_carriers(y, 0, fft, gi, noc, 8)
+        actual = symbol_carriers(padded, offset, fft, gi, noc, 8)
+        assert np.array_equal(actual, expected)
+
     def test_cached_channel_estimate_is_identical(self):
         # Passing the carrier cache must not change the dense channel estimate.
         y, _H, (fft, gi, noc, dx, dy, cp, add) = self._symbols(n_sym=8)

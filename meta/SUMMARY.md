@@ -16,6 +16,24 @@ broadcasts, decodes all L1 signalling, and extracts a real data-PLP payload
   The HackRF was retired (no longer functional); the RSP1B's wider dynamic
   range lifted PLP-0 to 74/74.
 
+## Open RSP1B driver (2026-10-18)
+
+`rsp-open/` is an independent userspace driver for the RSP1B (libusb, MSi2500
++ MSi001; no `libsdrplay_api.so`, no vendor service) and a SoapySDR module
+`driver=rsp-open`.  It replays the vendor API's own captured control sequence
+for the air-proven 587 MHz / 10 MS/s / 8 MHz / **IFGR 44 / RFGR 4** rung
+(including the RFGR-4 `0x12df` front-end write and the IFGR-44 gain word),
+uses a lock-free bounded ring, and a vendor-compatible close so the vendor API
+can re-open the device without a power cycle.
+
+On-air (8 s RF33 capture, no mid-stream gaps): L1-Basic/L1-Detail CRC OK,
+BSID 540, **PLP-0 74/74**, **PLP-16 1/1**.  **PLP-1 256QAM is 0/117** on the
+open capture (vendor 117/117); the gain/clipping part is fixed, and the
+remaining deficit is the vendor API's DC/IQ/AGC correction (open raw IQ
+circularity 0.0497 vs. vendor 0.00031).  `atsc3-capture --driver rsp-open`,
+`atsc3-live --driver rsp-open`, and `ATSC3_SDR_DRIVER=rsp-open` select it.
+Details: `rsp-open/docs/protocol.md`.
+
 ## Validated Chain
 
 ```

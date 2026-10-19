@@ -8,6 +8,7 @@ available on this setup, and the SDRplay delivers a wider dynamic range.
 """
 
 import argparse
+import os
 import shutil
 import sys
 from dataclasses import dataclass
@@ -19,8 +20,9 @@ from pathlib import Path
 SDRPLAY_IFGR_DEFAULT = 40
 SDRPLAY_RFGR_DEFAULT = 4
 
-#: The SoapySDR device driver name for the SDRplay.
-SDRPLAY_DRIVER = 'sdrplay'
+#: The SoapySDR device driver name for the SDRplay.  ``rsp-open`` selects the
+#: in-repo open driver (``rsp-open/``), ``sdrplay`` the vendor API.
+SDRPLAY_DRIVER = os.environ.get('ATSC3_SDR_DRIVER', 'sdrplay')
 
 #: Baseband filter bandwidth for a 6 MHz ATSC 3.0 channel (A/322 Annex N).
 SDRPLAY_BANDWIDTH_HZ = 8_000_000
@@ -78,11 +80,12 @@ def capture(
             "build/install the sdrbindings extension."
         )
 
-    if device_type and device_type != SDRPLAY_DRIVER:
+    if device_type and device_type not in ('sdrplay', 'rsp-open'):
         raise RuntimeError(f"Unsupported device type: {device_type}")
 
     _capture_sdrplay(freq_hz, sample_rate, gain_db, duration_sec,
-                     output_file, device_index, rf_gain_db, cs8)
+                     output_file, device_index, rf_gain_db, cs8,
+                     driver=device_type)
     return output_file
 
 
@@ -93,7 +96,7 @@ def _detect_sdr_tools() -> DetectedSdr:
 
 
 def _capture_sdrplay(freq_hz, sample_rate, gain_db, duration_sec, output_file,
-                     device_index=0, rf_gain_db=None, cs8=False):
+                     device_index=0, rf_gain_db=None, cs8=False, driver=None):
     """Capture using the SDRplay through the ``sdrbindings`` extension."""
     bindings = _bindings()
     if bindings is None:
@@ -110,7 +113,7 @@ def _capture_sdrplay(freq_hz, sample_rate, gain_db, duration_sec, output_file,
         duration_sec=duration_sec,
         ifgr=ifgr,
         rfgr=rfgr,
-        driver=SDRPLAY_DRIVER,
+        driver=driver or SDRPLAY_DRIVER,
         index=device_index,
         cs8=cs8,
     )
@@ -143,6 +146,11 @@ The SDRplay RSP1B is driven through sdrbindings (SoapySDR).  RTL-SDR
                         help="RF gain (RFGR) for the SDRplay")
     parser.add_argument("-i", "--device-index", type=int, default=0,
                         help="Device index (for multiple SDRplay units)")
+    parser.add_argument("--driver", default=None,
+                        choices=["sdrplay", "rsp-open"],
+                        help="SoapySDR driver: vendor sdrplay or the open "
+                             "rsp-open module (default: $ATSC3_SDR_DRIVER "
+                             "or sdrplay)")
     parser.add_argument("-s", "--sample-rate", type=int, default=None,
                         help="Sample rate in Hz (default 10 MS/s)")
     parser.add_argument("--cs8", action="store_true",
@@ -168,6 +176,7 @@ The SDRplay RSP1B is driven through sdrbindings (SoapySDR).  RTL-SDR
             device_index=args.device_index,
             rf_gain_db=args.rf_gain,
             cs8=args.cs8,
+            device_type=args.driver,
         )
         print(f"✓ Captured {args.duration}s at {args.freq} MHz → {output}")
     except RuntimeError as e:

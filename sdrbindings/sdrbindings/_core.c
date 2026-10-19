@@ -48,6 +48,10 @@
 #define SDRBINDINGS_DEFAULT_DRIVER "sdrplay"
 #define SDRBINDINGS_DEFAULT_FORMAT SOAPY_SDR_CS16
 #define SDRBINDINGS_DEFAULT_TIMEOUT_US 1000000L
+/* A single read may span several stream MTUs (the live loop asks for a full
+ * acquisition window).  Cap it so a caller cannot request an unbounded
+ * allocation; 16M complex samples is 64 MB at CS16. */
+#define SDRBINDINGS_MAX_READ_ELEMS (16u * 1024u * 1024u)
 
 /* ------------------------------------------------------------------ */
 /* helpers                                                            */
@@ -562,36 +566,44 @@ static PyObject *Device_read(DeviceObject *self, PyObject *args, PyObject *kwds)
         return NULL;
     }
     size_t elems = num_elems > 0 ? (size_t)num_elems : self->mtu;
-    if (elems > self->mtu)
-        elems = self->mtu;
+    if (elems > SDRBINDINGS_MAX_READ_ELEMS)
+        elems = SDRBINDINGS_MAX_READ_ELEMS;
 
     size_t bytes = elems * self->elem_bytes;
     void *buf = malloc(bytes);
     if (buf == NULL)
         return PyErr_NoMemory();
 
-    int flags = 0;
-    long long time_ns = 0;
-    void *buffs[1] = {buf};
-    int n;
+    size_t got = 0;
+    int last = 0;
     Py_BEGIN_ALLOW_THREADS
-    n = SoapySDRDevice_readStream(self->dev, self->stream, buffs, elems,
-                                  &flags, &time_ns, timeout_us);
+    while (got < elems) {
+        int flags = 0;
+        long long time_ns = 0;
+        void *buffs[1] = {(char *)buf + got * self->elem_bytes};
+        int n = SoapySDRDevice_readStream(self->dev, self->stream, buffs,
+                                          elems - got, &flags, &time_ns,
+                                          timeout_us);
+        last = n;
+        if (n <= 0)
+            break;
+        got += (size_t)n;
+    }
     Py_END_ALLOW_THREADS
 
-    if (n < 0) {
+    if (got == 0 && last < 0) {
         free(buf);
-        if (n == SOAPY_SDR_TIMEOUT) {
+        if (last == SOAPY_SDR_TIMEOUT) {
             Py_RETURN_NONE;
         }
-        if (n == SOAPY_SDR_OVERFLOW) {
+        if (last == SOAPY_SDR_OVERFLOW) {
             PyErr_SetString(PyExc_BufferError, "SOAPY_SDR_OVERFLOW");
             return NULL;
         }
-        set_soapy_error("readStream", n);
+        set_soapy_error("readStream", last);
         return NULL;
     }
-    PyObject *out = PyBytes_FromStringAndSize(buf, (Py_ssize_t)n * self->elem_bytes);
+    PyObject *out = PyBytes_FromStringAndSize(buf, (Py_ssize_t)got * self->elem_bytes);
     free(buf);
     return out;
 }

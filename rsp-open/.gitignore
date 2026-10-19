@@ -1,0 +1,4 @@
+*.o
+librsp.a
+rsp-capture
+tests/test_tables

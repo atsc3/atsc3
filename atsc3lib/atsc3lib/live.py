@@ -22,6 +22,7 @@ with the air rate needs the accelerated hot paths (the next rung).  Bounds are
 all explicit and spec-derived; nothing here scans or buffers without a limit.
 """
 
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional
@@ -147,11 +148,12 @@ class SdrplayIqSource(IqSource):
 
     def __init__(self, freq_hz: float, sample_rate: float = 10e6,
                  bandwidth_hz: float = 8e6, ifgr: float = 40,
-                 rfgr: float = 4, driver: str = "sdrplay", index: int = 0):
+                 rfgr: float = 4, driver: str = None, index: int = 0):
         import sdrbindings
         self._bindings = sdrbindings
         self.sample_rate = sample_rate
         self.sample_format = "cs16"
+        driver = driver or os.environ.get('ATSC3_SDR_DRIVER', 'sdrplay')
         self._dev = sdrbindings.Device(driver, index=index)
         self._dev.set_sample_rate(sample_rate)
         self._dev.set_frequency(freq_hz)

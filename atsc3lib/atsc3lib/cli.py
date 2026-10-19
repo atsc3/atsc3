@@ -334,6 +334,10 @@ def live_main(argv=None):
                         help='max frames decoded per lock')
     parser.add_argument('--ifgr', type=float, default=40)
     parser.add_argument('--rfgr', type=float, default=4)
+    parser.add_argument('--driver', default=None,
+                        choices=['sdrplay', 'rsp-open'],
+                        help='SoapySDR driver (default: $ATSC3_SDR_DRIVER '
+                             'or sdrplay)')
     parser.add_argument('--outdir', default=None,
                         help='write reassembled media/audio/A-V files here '
                              '(default: do not write media)')
@@ -344,7 +348,8 @@ def live_main(argv=None):
         source = FileIqSource(args.file, args.rate, args.fmt)
     else:
         source = SdrplayIqSource(args.freq, sample_rate=args.rate,
-                                 ifgr=args.ifgr, rfgr=args.rfgr)
+                                 ifgr=args.ifgr, rfgr=args.rfgr,
+                                 driver=args.driver)
     config = LiveConfig(plp_id=args.plp, subframe=args.subframe,
                         max_frames=args.max_frames)
     receiver = LiveReceiver(source, config)

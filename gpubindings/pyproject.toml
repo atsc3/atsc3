@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68", "wheel", "numpy"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gpubindings"
+version = "0.1.0"
+description = "Optional CUDA kernels for the ATSC 3.0 receiver"
+requires-python = ">=3.10,<3.14"
+dependencies = ["numpy"]
+
+[project.optional-dependencies]
+test = ["pytest>=7.0"]

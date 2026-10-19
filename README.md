@@ -13,6 +13,7 @@ WHUT mux, SDRplay RSP1B) and an independent receiver.
 |---|---|---|
 | [`atsc3lib/`](atsc3lib/) | Python + C extensions | Physical-layer demodulation and **synthetic transmission** (the inverse chain), L1 signalling, data-PLP decoding, and A/331 service discovery / ROUTE / MMTP / media. The dense kernels (normalized-min-sum LDPC and BCH, max-log demapper, frequency-interleaver address generator) are built in as `atsc3lib._bindings` |
 | [`sdrbindings/`](sdrbindings/) | C extension | SDRplay capture over SoapySDR |
+| [`rsp-open/`](rsp-open/) | C + Soapy module | Independent userspace RSP1B driver (libusb, no vendor API); SoapySDR driver `rsp-open` |
 | [`ac4bindings/`](ac4bindings/) | C extension | AC-4 (ETSI TS 103 190) decoder kernels |
 | [`openatsc3-pki/`](openatsc3-pki/) | Python (optional) | Own CA, signed-signaling verification, and CENC content protection (A/360). Dependency-light: only `cryptography` + `asn1crypto` |
 | [`openatsc3-ca/`](openatsc3-ca/) | Python (optional) | CA operator application: a Django + PostgreSQL ledger over `openatsc3-pki` (persistent revocation, rollover, admin UI) |

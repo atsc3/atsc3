@@ -404,7 +404,7 @@ def symbol_carriers(y: np.ndarray, t0: int, fft_size: int,
     if n <= 0:
         return np.zeros((0, noc), dtype=np.complex128)
     stride = fft_size + guard_interval
-    idx = (np.arange(n)[:, None] * stride + guard_interval
+    idx = (int(t0) + np.arange(n)[:, None] * stride + guard_interval
            + np.arange(fft_size)[None, :])
     body = np.asarray(y)[idx].astype(np.complex128)
     spectrum = np.fft.fftshift(np.fft.fft(body, axis=1), axes=1)

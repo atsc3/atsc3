@@ -125,6 +125,45 @@ Higher gain raises the signal but risks overload and intermodulation in the
 presence of strong adjacent channels.  On the RF33 lighthouse the settings
 ``-g 45 --rf-gain 3`` are the tuned capture that raises PLP-0 to 74/74.
 
+Open driver (``rsp-open``)
+--------------------------
+
+The workspace also contains an experimental, independent userspace driver for
+the RSP1B in ``rsp-open/``.  It does not load ``libsdrplay_api.so`` and does
+not need ``sdrplay.service``; it drives the MSi2500/MSi001 over libusb.  It is
+selected as the SoapySDR driver ``rsp-open``.
+
+Build and install it once::
+
+   make -C rsp-open
+   make -C rsp-open test
+   sudo make -C rsp-open install-soapy
+
+Then stop the vendor service (the two stacks claim the same USB device) and
+select the driver::
+
+   sudo systemctl stop sdrplay.service
+   atsc3-capture -f 587 -d 8 -g 44 --driver rsp-open -o out/rf33-open.iq
+   atsc3-live --freq 587e6 --plp 0 --ifgr 44 --driver rsp-open
+
+or set ``ATSC3_SDR_DRIVER=rsp-open`` for both commands.
+
+Status (2026-10-18): the air-proven rung is 587 MHz, 10 MS/s, 8 MHz bandwidth,
+**IFGR 44 / RFGR 4** (the clean, non-clipping level; IFGR 40 is ~4 dB hotter).
+An 8 s open capture has no mid-stream sequence gaps, no overruns, and decodes
+**PLP-0 74/74** and **PLP-16 1/1**; PLP-1 (256QAM) is 0/117 on the open capture
+while the vendor path remains 117/117.  The remaining PLP-1 deficit is the
+vendor API's DC/IQ/AGC correction: the open raw IQ has circularity 0.0497 and
+lag-1 0.0181, while the vendor-corrected capture has 0.00031 and 0.00236.
+The open driver replays the vendor API's own control sequence for the
+validated rung (including the RFGR-4 `0x12df` front-end write and the IFGR-44
+gain word) and a vendor-compatible close, so
+``SoapySDRUtil --probe="driver=sdrplay"`` works again after a capture without
+a power cycle.  Other frequencies use a computed fallback and are not
+air-proven.  See ``rsp-open/docs/protocol.md`` for the captured register
+words and packet layout.
+
+
 Troubleshooting
 ---------------
 
