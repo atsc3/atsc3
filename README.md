@@ -109,7 +109,8 @@ creates a **draft** GitHub release:
   `sdrbindings` (SoapySDR is built in the manylinux container first)
 - `rsp-open` source and Intel binary tarballs (it is a C/SoapySDR project, not
   a Python wheel; the Python Soapy wrapper is `sdrbindings`)
-- optional CUDA wheels for `gpubindings` for `sm_75` and `sm_120`
+- optional fat CUDA wheels for `gpubindings`, one per CPython version
+  (3.10–3.13), each covering `sm_75` through `sm_120` (Turing to Blackwell)
 - `SHA256SUMS` for the `rsp-open` tarballs
 
 Versions for the Python packages are derived from the release tag by
@@ -147,13 +148,15 @@ Do not move or recreate a published tag; use a new patch tag for a new build.
 
 PyPI publishing is separate from the GitHub draft release. Upload the pure and
 manylinux wheels plus the sdists with `uv publish` or `twine`, and keep the
-CUDA `gpubindings` wheels as a separate optional release asset. Runtime notes
+CUDA `gpubindings` wheels as separate optional release assets. Runtime notes
 for the wheel set: `sdrbindings` leaves `libSoapySDR` and the SoapySDR driver
 module (`rsp-open` or the vendor `sdrplay` API) as system runtime dependencies,
 so that the bindings and the dlopen'd driver share one SoapySDR registry;
 `openatsc3-ca` expects `OPENATSC3_CA_DATABASE_URL` (its
 `pgserver` test extra is Python 3.12-only); and `gpubindings` is the optional
-CUDA extra for `atsc3lib`.
+CUDA extra for `atsc3lib`. Its wheels embed cubins for every supported GPU
+generation plus PTX for later cards, so they are installed unchanged with pip;
+the host only needs a current NVIDIA driver (no CUDA toolkit or runtime).
 
 ## Repository layout notes
 

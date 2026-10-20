@@ -20,10 +20,13 @@ nvcc builds the extension directly instead of going through a setuptools
 ``Extension`` (which would need a separate C shim to link the two).
 
 Architecture defaults to ``-arch=native`` (the build host's GPU).  Pin it with
-``ATSC3_CUDA_ARCH``, e.g. ``ATSC3_CUDA_ARCH=sm_89`` (Ada) or ``sm_120``
-(Blackwell) when building off-box.
+``ATSC3_CUDA_ARCH`` when building off-box: a single ``sm_XX`` (for example
+``sm_89`` for Ada or ``sm_120`` for Blackwell), a comma-separated list, or
+``release`` for the fat wheel covering
+``sm_75,sm_80,sm_89,sm_90,sm_100,sm_120``.
 """
 
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -36,6 +39,11 @@ from setuptools.command.build_ext import build_ext
 
 
 _HERE = Path(__file__).resolve().parent
+
+_ARCH_SPEC = importlib.util.spec_from_file_location(
+    "_cuda_arch", _HERE / "gpubindings" / "_cuda_arch.py")
+_cuda_arch = importlib.util.module_from_spec(_ARCH_SPEC)
+_ARCH_SPEC.loader.exec_module(_cuda_arch)
 # setuptools rejects absolute paths in Extension.sources, so keep the declared
 # sources relative and resolve them against the package root at build time.
 _CUDA_SOURCES = [
@@ -69,8 +77,8 @@ class _CudaBuildExt(build_ext):
 
         python_include = sysconfig.get_paths()["include"]
         suffix = sysconfig.get_config_var("EXT_SUFFIX") or ".so"
-        arch = os.environ.get("ATSC3_CUDA_ARCH")
-        arch_flag = "-arch=native" if not arch else "-arch={}".format(arch)
+        arch_flags = _cuda_arch.nvcc_arch_flags(
+            os.environ.get("ATSC3_CUDA_ARCH"))
 
         for ext in self.extensions:
             out = Path(self.build_lib) / (
@@ -82,7 +90,7 @@ class _CudaBuildExt(build_ext):
             cmd = [
                 "nvcc",
                 "-O3",
-                arch_flag,
+                *arch_flags,
                 "-shared",
                 "-Xcompiler", "-fPIC",
                 "-I", python_include,

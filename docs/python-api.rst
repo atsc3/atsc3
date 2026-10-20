@@ -62,6 +62,7 @@ Acceleration
 ------------
 
 The optional CUDA path is selected at runtime and falls back to the C kernels.
+Prebuilt wheels cover ``sm_75`` through ``sm_120`` for CPython 3.10-3.13.
 See :doc:`live-streaming` for host requirements and the pipeline.
 
 .. automodule:: atsc3lib.accelerator

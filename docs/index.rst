@@ -33,7 +33,8 @@ The workspace is a small monorepo:
    * - ``gpubindings``
      - CUDA (optional)
      - Optional CUDA demap + LDPC + BCH kernels for live throughput; the C
-       kernels remain the required fallback.
+       kernels remain the required fallback.  Release wheels are fat binaries
+       covering ``sm_75`` through ``sm_120`` (one per CPython 3.10-3.13).
    * - ``openatsc3-pki``
      - Python (optional)
      - Own certificate authority, signed-signaling verification, and CENC

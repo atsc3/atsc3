@@ -145,29 +145,37 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [sm_75, sm_120]
+        include:
+          - { python: "3.10", cp: cp310 }
+          - { python: "3.11", cp: cp311 }
+          - { python: "3.12", cp: cp312 }
+          - { python: "3.13", cp: cp313 }
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - name: Build gpubindings CUDA wheel
         env:
-          ATSC3_CUDA_ARCH: ${{ matrix.arch }}
+          ATSC3_CUDA_ARCH: release
+          PYTHON_VERSION: ${{ matrix.python }}
         run: |
+          mkdir -p dist
           docker run --rm -v "$PWD:/src" -w /src \
             -e ATSC3_CUDA_ARCH -e ATSC3_CUDA_REQUIRED=1 \
+            -e PYTHON_VERSION \
+            -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
             nvidia/cuda:12.8.1-devel-ubuntu22.04 \
             bash -lc '
               apt-get update
               apt-get install -y python3 python3-pip python3-venv git
               python3 -m pip install --no-cache-dir uv
-              uv build --package gpubindings --wheel --out-dir dist --python 3.13
+              uv build --package gpubindings --wheel --out-dir dist \
+                --python "$PYTHON_VERSION"
+              chown -R "$HOST_UID:$HOST_GID" dist
             '
-          wheel=$(ls dist/gpubindings-*.whl)
-          mv "$wheel" "${wheel%.whl}-${{ matrix.arch }}.whl"
       - uses: actions/upload-artifact@v4
         with:
-          name: gpubindings-${{ matrix.arch }}
+          name: gpubindings-${{ matrix.cp }}
           path: dist/*.whl
 
   release:

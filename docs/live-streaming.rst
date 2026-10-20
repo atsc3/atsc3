@@ -254,6 +254,20 @@ host without ``nvcc`` the package installs without the CUDA kernels, and
    # CPU-only host: the normal install is unchanged
    make
 
+Prebuilt release wheels are also available.  The GitHub release ships one
+fat CUDA wheel per CPython version (3.10-3.13); each carries cubins for
+``sm_75``, ``sm_80``, ``sm_89``, ``sm_90``, ``sm_100`` and ``sm_120`` plus
+PTX for later GPUs, so one file runs from Turing through Blackwell.  Install
+the wheel that matches the interpreter:
+
+.. code-block:: bash
+
+   pip install gpubindings-<version>-cp312-cp312-linux_x86_64.whl
+
+No renaming or per-GPU wheel selection is needed.  The wheel needs only a
+current NVIDIA driver; ``nvcc`` and the CUDA toolkit are build-time
+requirements, not runtime ones.
+
 Backend selection is runtime, not build-time:
 
 .. code-block:: bash
@@ -290,7 +304,8 @@ The remaining proof is on air:
 * **Link-margin behaviour.**  The fixture is a clean 117/117 frame.  A
   marginal link spends more LDPC iterations; the alpha ladder and early exit
   limit the cost, but the sustained budget should be re-measured there.
-* **RTX 5070 tuning.**  Rebuild with ``ATSC3_CUDA_ARCH=sm_120`` and re-run
+* **RTX 5070 tuning.**  Rebuild with ``ATSC3_CUDA_ARCH=sm_120`` (native) or
+  ``ATSC3_CUDA_ARCH=release`` (fat, ``sm_75`` through ``sm_120``) and re-run
   ``tools.bench_live``; more bandwidth should widen the margin.
 
 Summary

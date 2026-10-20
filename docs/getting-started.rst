@@ -73,6 +73,12 @@ host without the CUDA toolkit is unchanged.  At runtime,
 ``ATSC3LIB_GPU=auto`` (default) uses the GPU when present and falls back to the
 C kernels; ``ATSC3LIB_GPU=off`` forces the CPU path.
 
+The GitHub release also ships prebuilt fat CUDA wheels, one per CPython
+version (3.10-3.13), each covering ``sm_75`` through ``sm_120``.  They need
+only a current NVIDIA driver, not the CUDA toolkit; install the wheel that
+matches the interpreter with ``pip``.  ``make install-gpu`` remains the
+source-build path.
+
 The default install deliberately leaves out the ``openatsc3-ca`` Django app;
 use ``make install-all`` if you want it.  The PKI track (create a CA, issue a
 certificate, transmit and verify) is covered separately in
