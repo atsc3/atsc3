@@ -4,7 +4,7 @@ import datetime as dt
 
 from asn1crypto import cms as acms
 
-from openatsc3_pki import ca, cms
+from openatsc3_pki import ca, cms, keys
 
 
 def _signer(authority):
@@ -54,3 +54,11 @@ def test_cms_wrong_key_fails(authority):
     blob = cms.sign_detached(b"msg", cert, key)
     wrong = other.load_broadcaster("WJLA")
     assert not cms.verify(blob, b"msg", wrong.cert.public_key())
+
+
+def test_cms_rejects_signing_key_not_matching_certificate(authority):
+    import pytest
+
+    cert, _key = _signer(authority)
+    with pytest.raises(ValueError, match="does not match"):
+        cms.sign_detached(b"msg", cert, keys.generate(keys.SIGNER_CURVE))

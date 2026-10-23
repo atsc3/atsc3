@@ -76,3 +76,26 @@ def test_validation():
         quorum.split(b"secret", 1, quorum.MAX_SHARES + 1)
     with pytest.raises(ValueError):
         quorum.combine([])
+    with pytest.raises(ValueError):
+        quorum.combine([b"", b"\x02\x00"])
+
+
+def test_zero_leading_coefficient_is_replaced():
+    """A zero top coefficient must not lower the effective threshold."""
+    calls = {"n": 0}
+
+    def fake(count):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            return b"\x00" * count
+        return b"\x01" * count
+
+    secret = b"S"
+    shares = quorum.split(secret, 3, 5, randbytes=fake)
+    assert quorum.combine(shares[:2]) != secret
+    assert quorum.combine(shares[:3]) == secret
+
+
+def test_split_rejects_short_randomness():
+    with pytest.raises(ValueError):
+        quorum.split(b"secret", 2, 3, randbytes=lambda count: b"\x01")

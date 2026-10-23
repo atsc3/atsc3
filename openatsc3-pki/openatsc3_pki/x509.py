@@ -23,7 +23,9 @@ from dataclasses import dataclass, field
 from typing import Iterable, Optional, Tuple, Union
 
 from cryptography import x509
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from cryptography.x509.oid import ExtendedKeyUsageOID, ExtensionOID, NameOID
 
 from . import keys, signer as _signer
@@ -68,11 +70,44 @@ def _serial() -> int:
     return x509.random_serial_number()
 
 
+def _public_der(key: "KeyLike") -> bytes:
+    public = getattr(key, "public", key)
+    return public.public_bytes(
+        Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+
+
+def _same_public_key(a, b) -> bool:
+    return _public_der(a) == _public_der(b)
+
+
+def _require_key_curve(key: "KeyLike", allowed: Tuple[str, ...]) -> None:
+    if key.curve not in allowed:
+        raise ValueError(f"unsupported ECDSA curve {key.curve!r}")
+
+
+def _require_issuer_key(issuer: "Certificate", issuer_key: "KeyLike") -> None:
+    if not _same_public_key(issuer_key, issuer.cert.public_key()):
+        raise ValueError("issuer key does not match the issuer certificate")
+
+
+def _self_signed(cert: "Certificate") -> bool:
+    public = cert.cert.public_key()
+    if not isinstance(public, ec.EllipticCurvePublicKey):
+        return False
+    try:
+        public.verify(cert.cert.signature, cert.cert.tbs_certificate_bytes,
+                      ec.ECDSA(cert.cert.signature_hash_algorithm))
+    except InvalidSignature:
+        return False
+    return True
+
+
 def issue_root(subject: SubjectInfo, key: "KeyLike",
                days: int = 7300) -> "Certificate":
     """Self-signed root certificate (A/360 5.3.1.2)."""
-    if key.curve != keys.ROOT_CURVE:
-        raise ValueError(f"root must be {keys.ROOT_CURVE} (A/360 5.3.1.2)")
+    if key.curve not in (keys.ROOT_CURVE, "secp521r1"):
+        raise ValueError(
+            f"root must be {keys.ROOT_CURVE} or stronger (A/360 5.3.1.2)")
     now = _dt.datetime.now(_dt.timezone.utc)
     builder = (
         x509.CertificateBuilder()
@@ -98,8 +133,11 @@ def issue_root(subject: SubjectInfo, key: "KeyLike",
 
 
 def issue_ca(subject: SubjectInfo, key: "KeyLike", issuer: "Certificate",
-             issuer_key: "KeyLike", days: int = 3650) -> "Certificate":
+             issuer_key: "KeyLike", days: int = 3650,
+             path_length: Optional[int] = 0) -> "Certificate":
     """Issuing CA certificate (A/360 5.3.1.3), signed by ``issuer``."""
+    _require_key_curve(key, ("secp256r1", keys.CA_CURVE, "secp521r1"))
+    _require_issuer_key(issuer, issuer_key)
     builder = (
         x509.CertificateBuilder()
         .subject_name(subject.name())
@@ -108,7 +146,7 @@ def issue_ca(subject: SubjectInfo, key: "KeyLike", issuer: "Certificate",
         .serial_number(_serial())
         .not_valid_before(_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(minutes=1))
         .not_valid_after(_dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=days))
-        .add_extension(x509.BasicConstraints(ca=True, path_length=None),
+        .add_extension(x509.BasicConstraints(ca=True, path_length=path_length),
                        critical=True)
         .add_extension(
             x509.KeyUsage(digital_signature=False, content_commitment=False,
@@ -151,6 +189,9 @@ def cross_sign_root(new_root: "Certificate", old_issuer: "Certificate",
     new_public = new_root.cert.public_key()
     if not isinstance(new_public, ec.EllipticCurvePublicKey):
         raise ValueError("new root must be an EC public key")
+    if new_root.cert.subject != new_root.cert.issuer or not _self_signed(new_root):
+        raise ValueError("new root must be self-signed")
+    _require_issuer_key(old_issuer, old_key)
     now = _dt.datetime.now(_dt.timezone.utc)
     not_after = min(new_root.cert.not_valid_after_utc,
                     old_issuer.cert.not_valid_after_utc,
@@ -165,7 +206,7 @@ def cross_sign_root(new_root: "Certificate", old_issuer: "Certificate",
         .serial_number(_serial())
         .not_valid_before(now - _dt.timedelta(minutes=1))
         .not_valid_after(not_after)
-        .add_extension(x509.BasicConstraints(ca=True, path_length=None),
+        .add_extension(x509.BasicConstraints(ca=True, path_length=1),
                        critical=True)
         .add_extension(
             x509.KeyUsage(digital_signature=False, content_commitment=False,
@@ -188,9 +229,11 @@ def issue_signaling_signer(subject: SubjectInfo, key: "KeyLike",
                            issuer: "Certificate", issuer_key: "KeyLike",
                            bsids: Iterable[int], days: int = 365) -> "Certificate":
     """Broadcast signaling signer certificate (A/360 5.3.1.6)."""
-    bsid_set = tuple(sorted(int(b) for b in bsids))
+    bsid_set = tuple(sorted({int(b) for b in bsids}))
     if not bsid_set:
         raise ValueError("a signaling signer must list at least one bsid")
+    _require_key_curve(key, ("secp256r1", keys.CA_CURVE, "secp521r1"))
+    _require_issuer_key(issuer, issuer_key)
     builder = (
         x509.CertificateBuilder()
         .subject_name(subject.name())
@@ -230,6 +273,8 @@ def issue_ocsp_responder(subject: SubjectInfo, key: "KeyLike",
                          issuer: "Certificate", issuer_key: "KeyLike",
                          days: int = 365) -> "Certificate":
     """OCSP responder certificate (A/360 5.3.1.7)."""
+    _require_key_curve(key, ("secp256r1", keys.CA_CURVE, "secp521r1"))
+    _require_issuer_key(issuer, issuer_key)
     builder = (
         x509.CertificateBuilder()
         .subject_name(subject.name())

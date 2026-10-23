@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from typing import Mapping, Optional, Sequence
 
 from cryptography.hazmat.primitives import hashes
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric import ec
 
 from . import signer as _signer, x509
@@ -117,9 +118,12 @@ def verify_minutes(record: Mapping, issuer: Optional[x509.Certificate] = None) -
         if not isinstance(public, ec.EllipticCurvePublicKey):
             raise ValueError("issuer must be an EC certificate")
         hash_name = _signer.hash_for_curve(public.curve.name)
-        public.verify(base64.b64decode(signature["value"]),
-                      _canonical(_without(record, "signature")),
-                      ec.ECDSA(_signer.HASH_ALGORITHMS[hash_name]()))
+        try:
+            public.verify(base64.b64decode(signature["value"]),
+                          _canonical(_without(record, "signature")),
+                          ec.ECDSA(_signer.HASH_ALGORITHMS[hash_name]()))
+        except InvalidSignature:
+            raise ValueError("minutes signature does not verify") from None
     return dict(record)
 
 
@@ -133,6 +137,17 @@ def rotation_bundle(new_root: x509.Certificate, cross: x509.Certificate,
     its cross-signed bridge under the outgoing root, the outgoing anchor (when
     supplied), and a hashed ``MANIFEST.json`` binding them.
     """
+    if not x509._self_signed(new_root):
+        raise ValueError("new root must be self-signed")
+    if x509._public_der(new_root.cert.public_key()) != x509._public_der(
+            cross.cert.public_key()):
+        raise ValueError("cross certificate does not carry the new root key")
+    if old_root is not None:
+        if cross.cert.issuer != old_root.cert.subject:
+            raise ValueError("cross certificate is not issued by the old root")
+        from . import verify as _verify
+        if not _verify.signed_by(cross, old_root):
+            raise ValueError("cross certificate is not signed by the old root")
     artifacts = {
         "new-root.cert.pem": new_root.pem(),
         "new-root-cross.pem": cross.pem(),

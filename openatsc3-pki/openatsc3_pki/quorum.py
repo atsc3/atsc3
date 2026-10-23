@@ -64,6 +64,27 @@ def _div(a: int, b: int) -> int:
     return 0 if a == 0 else _mul(a, _inv(b))
 
 
+def _coefficient(size: int, randbytes: Callable[[int], bytes]) -> bytes:
+    value = randbytes(size)
+    if len(value) != size:
+        raise ValueError("randbytes returned the wrong length")
+    return value
+
+
+def _nonzero_coefficient(size: int, randbytes: Callable[[int], bytes]) -> bytes:
+    """A leading coefficient with no zero byte (the polynomial degree is exact).
+
+    Shamir over GF(256) evaluates an independent degree-``threshold-1``
+    polynomial per byte.  If the highest-degree coefficient for a byte is zero,
+    that byte's polynomial has lower degree and fewer than ``threshold`` shares
+    recover it, so the leading coefficient must be non-zero in every byte.
+    """
+    while True:
+        value = _coefficient(size, randbytes)
+        if all(value):
+            return value
+
+
 def split(secret: bytes, threshold: int, shares: int, *,
           randbytes: Callable[[int], bytes] = secrets.token_bytes) -> List[bytes]:
     """Split ``secret`` into ``shares`` shares, any ``threshold`` of which rebuild it.
@@ -76,7 +97,10 @@ def split(secret: bytes, threshold: int, shares: int, *,
     if not 1 <= threshold <= shares <= MAX_SHARES:
         raise ValueError(
             f"need 1 <= threshold ({threshold}) <= shares ({shares}) <= {MAX_SHARES}")
-    coefficients = [randbytes(len(secret)) for _ in range(threshold - 1)]
+    coefficients = [_coefficient(len(secret), randbytes)
+                    for _ in range(threshold - 2)]
+    if threshold > 1:
+        coefficients.append(_nonzero_coefficient(len(secret), randbytes))
     out: List[bytes] = []
     for x in range(1, shares + 1):
         y = bytearray(secret)
@@ -93,6 +117,8 @@ def combine(shares: Sequence[bytes]) -> bytes:
     """Reconstruct the secret from ``threshold`` or more shares (Lagrange at 0)."""
     if not shares:
         raise ValueError("no shares supplied")
+    if any(not isinstance(s, (bytes, bytearray)) or len(s) < 2 for s in shares):
+        raise ValueError("invalid share (empty or too short)")
     xs = [s[0] for s in shares]
     if any(x == 0 for x in xs):
         raise ValueError("invalid share (zero evaluation point)")

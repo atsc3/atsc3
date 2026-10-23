@@ -32,16 +32,18 @@ Signaling-message tasks (A/360 5.2.2.6):
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from cryptography import x509 as _x509
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from cryptography.x509 import ocsp as _ocsp
 from cryptography.x509.oid import ExtendedKeyUsageOID
 
-from . import cms, oids
+from . import cms, oids, ocsp as _ocsp_builder
 from .x509 import Certificate
 
 
@@ -83,6 +85,61 @@ def _verify_signed_by(cert: Certificate, issuer: Certificate) -> bool:
     return True
 
 
+def signed_by(cert: Certificate, issuer: Certificate) -> bool:
+    """Public wrapper: ``cert`` carries a valid signature by ``issuer``."""
+    return _verify_signed_by(cert, issuer)
+
+
+def is_ca(cert: Certificate) -> bool:
+    """True when ``cert`` has ``BasicConstraints(ca=True)``."""
+    return _is_ca(cert)
+
+
+def path_length(cert: Certificate) -> Optional[int]:
+    """The certificate's ``BasicConstraints.pathLenConstraint``, if any."""
+    return _path_length(cert)
+
+
+def _basic_constraints(cert: Certificate) -> Optional[_x509.BasicConstraints]:
+    try:
+        return cert.cert.extensions.get_extension_for_class(
+            _x509.BasicConstraints).value
+    except _x509.ExtensionNotFound:
+        return None
+
+
+def _is_ca(cert: Certificate) -> bool:
+    constraints = _basic_constraints(cert)
+    return bool(constraints is not None and constraints.ca)
+
+
+def _path_length(cert: Certificate) -> Optional[int]:
+    constraints = _basic_constraints(cert)
+    return None if constraints is None else constraints.path_length
+
+
+def _key_cert_sign(cert: Certificate) -> bool:
+    try:
+        usage = cert.cert.extensions.get_extension_for_class(
+            _x509.KeyUsage).value
+    except _x509.ExtensionNotFound:
+        return True
+    return usage.key_cert_sign
+
+
+def _digital_signature(cert: Certificate) -> bool:
+    try:
+        usage = cert.cert.extensions.get_extension_for_class(
+            _x509.KeyUsage).value
+    except _x509.ExtensionNotFound:
+        return True
+    return usage.digital_signature
+
+
+def _issuer_name_hash(issuer: Certificate) -> bytes:
+    return hashlib.sha1(issuer.cert.subject.public_bytes()).digest()
+
+
 @dataclass(frozen=True)
 class _Chain:
     """A leaf-to-root certificate path and the roots it reaches."""
@@ -100,13 +157,17 @@ def _find_chain(leaf: Certificate, roots: Sequence[Certificate],
     overlap window): the self-signed new root and a cross-signed bridge for it
     share a subject and key but are different certificates, and it rejects a
     forged self-signed cert that copies the anchor's subject.
+
+    Every issuer on the path must be a CA (``BasicConstraints.ca``) with
+    ``KeyUsage.keyCertSign`` when KeyUsage is present, and ``pathLenConstraint``
+    must permit the number of CA certificates below it (RFC 5280 6.1.4).
     """
     by_subject: Dict[bytes, List[Certificate]] = {}
     for c in list(pool) + list(roots):
         by_subject.setdefault(c.cert.subject.public_bytes(), []).append(c)
     root_subjects = {r.cert.subject.public_bytes() for r in roots}
 
-    def rec(current: Certificate, seen) -> Optional[Tuple[Certificate, ...]]:
+    def rec(current: Certificate, seen, ca_below: int) -> Optional[Tuple[Certificate, ...]]:
         if current.cert.subject.public_bytes() in root_subjects:
             for r in roots:
                 if _same_cert(r, current):
@@ -114,18 +175,26 @@ def _find_chain(leaf: Certificate, roots: Sequence[Certificate],
         for parent in by_subject.get(current.cert.issuer.public_bytes(), []):
             if parent.subject == current.subject:
                 continue
-            key = parent.cert.serial_number
+            key = hashlib.sha256(parent.der()).digest()
             if key in seen:
                 continue
-            sub = rec(parent, seen | {key})
+            if not _is_ca(parent) or not _key_cert_sign(parent):
+                continue
+            below = ca_below + (1 if _is_ca(current) else 0)
+            limit = _path_length(parent)
+            if limit is not None and below > limit:
+                continue
+            sub = rec(parent, seen | {key}, below)
             if sub is not None:
                 return (current,) + sub
         return None
 
-    path = rec(leaf, {leaf.cert.serial_number})
+    path = rec(leaf, {hashlib.sha256(leaf.der()).digest()}, 0)
     if path is None:
         return None
     root = path[-1]
+    if not _is_ca(root) or not _key_cert_sign(root):
+        return None
     if not _verify_signed_by(root, root):
         return None
     for child, parent in zip(path, path[1:]):
@@ -143,30 +212,40 @@ def _verify_ocsp(der: bytes, cert: Certificate, issuer: Certificate,
         return f"malformed OCSP response: {exc}"
     if resp.response_status is not _ocsp.OCSPResponseStatus.SUCCESSFUL:
         return "OCSP response status not successful"
+    issuer_name_hash = _issuer_name_hash(issuer)
+    issuer_key_hash = _ocsp_builder.public_key_hash(issuer)
     single = next((r for r in resp.responses
-                   if r.serial_number == cert.cert.serial_number), None)
+                   if r.serial_number == cert.cert.serial_number
+                   and r.issuer_name_hash == issuer_name_hash
+                   and r.issuer_key_hash == issuer_key_hash), None)
     if single is None:
-        return "no OCSP response matches certificate serial"
+        return "no OCSP response matches certificate serial and issuer"
     if single.certificate_status is not _ocsp.OCSPCertStatus.GOOD:
         return "certificate status is not good"
     if resp.signature_algorithm_oid is None:
         return "OCSP response has no signature"
-    responder = next((Certificate(c) for c in (resp.certificates or [])
-                       if c.subject == resp.responder_name), None)
-    if responder is None and resp.certificates:
-        responder = Certificate(resp.certificates[0])
+    candidates = [Certificate(c) for c in (resp.certificates or [])]
+    responder = next((c for c in candidates
+                      if resp.responder_name is not None
+                      and c.subject == resp.responder_name), None)
+    if responder is None and resp.responder_key_hash is not None:
+        responder = next((c for c in candidates
+                          if _ocsp_builder.public_key_hash(c)
+                          == resp.responder_key_hash), None)
+    if responder is None and not candidates:
+        responder = issuer
     if responder is None:
-        return "OCSP response carries no responder certificate"
+        return "OCSP response carries no matching responder certificate"
     # The responder certificate itself must be in date at verification time
     # (A/360 5.2.2.6 item 2), so an expired responder cannot sign revocation
     # status.
     reason = _check_validity(responder, now)
     if reason:
         return f"OCSP responder {reason}"
-    # The responder must authenticate: it is the issuer itself, or a
-    # delegated responder with id-kp-OCSPSigning signed by the issuer
-    # (RFC 6960 4.2.2.2).
-    if responder.subject != issuer.subject:
+    # The responder must authenticate: it is the issuer itself (same public
+    # key, not merely the same subject), or a delegated responder with
+    # id-kp-OCSPSigning signed by the issuer (RFC 6960 4.2.2.2).
+    if not _same_public_key(responder, issuer):
         try:
             eku = responder.cert.extensions.get_extension_for_class(
                 _x509.ExtendedKeyUsage).value
@@ -174,6 +253,8 @@ def _verify_ocsp(der: bytes, cert: Certificate, issuer: Certificate,
             return "OCSP responder is not authorized (no OCSPSigning EKU)"
         if ExtendedKeyUsageOID.OCSP_SIGNING not in eku:
             return "OCSP responder lacks id-kp-OCSPSigning"
+        if not _digital_signature(responder):
+            return "OCSP responder lacks digitalSignature KeyUsage"
         if not _verify_signed_by(responder, issuer):
             return "OCSP responder certificate is not signed by the issuer"
     try:
@@ -189,11 +270,10 @@ def _verify_ocsp(der: bytes, cert: Certificate, issuer: Certificate,
         return "OCSP response has no producedAt"
     if now < produced - _dt.timedelta(hours=oids.OCSP_SKEW_HOURS):
         return "OCSP producedAt is in the future"
-    single_update = resp.this_update_utc
-    if single_update is not None and now < single_update - _dt.timedelta(
+    if single.this_update_utc is not None and now < single.this_update_utc - _dt.timedelta(
             hours=oids.OCSP_SKEW_HOURS):
         return "OCSP thisUpdate is in the future"
-    if resp.next_update_utc is not None and now > resp.next_update_utc:
+    if single.next_update_utc is not None and now > single.next_update_utc:
         return "OCSP response expired (nextUpdate)"
     if now > produced + _dt.timedelta(days=oids.OCSP_MAX_AGE_DAYS):
         return "OCSP response older than 10 days"
@@ -248,6 +328,9 @@ def verify_certification_data(cdt, trust_roots: Sequence[Certificate],
 
     # 3: the CMS signature verifies and is authenticated by a message cert.
     signed = cdt.tobesigned or _recompute_tobesigned(cdt)
+    if cdt.tobesigned and cdt.tobesigned != cdt.tobesigned_bytes():
+        return Verdict(
+            False, "ToBeSignedData does not match the parsed fields"), None
     sig = None
     try:
         sig = cms.parse(cdt.cmssigneddata)
@@ -259,36 +342,48 @@ def verify_certification_data(cdt, trust_roots: Sequence[Certificate],
     if not cms.verify(cdt.cmssigneddata, signed, cdt_signer.cert.public_key()):
         return Verdict(False, "CertificationData CMSSignedData signature invalid"), None
 
-    # 4: the CDT signing key differs from the signaling keys.
+    # 4: the CDT signing key differs from the signaling keys, and the
+    # CurrentCert / NextCert / CDT signer are end entities (A/360 5.3.1.6).
     current = by_ski[cdt.current_cert]
+    if _is_ca(current):
+        return Verdict(False, "CurrentCert must not be a CA"), None
+    if cdt.next_cert:
+        next_cert = by_ski.get(cdt.next_cert)
+        if next_cert is not None and _is_ca(next_cert):
+            return Verdict(False, "NextCert must not be a CA"), None
+    if _is_ca(cdt_signer):
+        return Verdict(False, "CDT signer must not be a CA"), None
     if _same_public_key(cdt_signer, current):
         return Verdict(False, "CDT signing key equals CurrentCert key"), None
     if cdt.next_cert and _same_public_key(cdt_signer, by_ski.get(cdt.next_cert)):
         return Verdict(False, "CDT signing key equals NextCert key"), None
 
     # 5: a matching, authentic, good, fresh OCSP response per certificate.
-    if len(cdt.ocsp_responses) < len(certs):
-        return Verdict(False, "missing OCSP response for some certificate"), None
-    ocsp_by_serial: Dict[int, bytes] = {}
+    # Match the CertID issuer hashes as well as the serial, and resolve the
+    # issuer from the built chain so a CA cannot self-authorize a "good" for
+    # its own revocation (A/360 5.2.2.6 item 5, RFC 6960 4.2.2.2).
+    issuer_for: Dict[bytes, Certificate] = {}
+    for c in certs:
+        ski = c.subject_key_identifier()
+        issuer_for[ski] = _chain_issuer(verified.get(ski)) or c
+    ocsp_by_key: Dict[Tuple[int, bytes, bytes], bytes] = {}
     for der in cdt.ocsp_responses:
         try:
             r = _ocsp.load_der_ocsp_response(der)
         except ValueError:
             continue
         for single in r.responses:
-            ocsp_by_serial.setdefault(single.serial_number, der)
+            ocsp_by_key[(single.serial_number, single.issuer_name_hash,
+                         single.issuer_key_hash)] = der
     for c in certs:
-        der = ocsp_by_serial.get(c.cert.serial_number)
+        issuer = issuer_for[c.subject_key_identifier()]
+        key = (c.cert.serial_number, _issuer_name_hash(issuer),
+               _ocsp_builder.public_key_hash(issuer))
+        der = ocsp_by_key.get(key)
         if der is None:
             return Verdict(False,
                            f"no OCSP response for serial {c.cert.serial_number}"), None
-        # The OCSP response for a chain certificate is authenticated by \emph{its
-        # issuer} -- which for a CA that is a child of the trusted root is the
-        # root itself, not a certificate carried in the CDT (A/360 5.2.2.6 item
-        # 5, RFC 6960 4.2.2.2).  Resolve it from the built chain, so a CA cannot
-        # self-authorize a "good" for its own revocation.
-        issuer = _chain_issuer(verified.get(c.subject_key_identifier()))
-        reason = _verify_ocsp(der, c, issuer or c, now, cdt.ocsp_refresh)
+        reason = _verify_ocsp(der, c, issuer, now, cdt.ocsp_refresh)
         if reason:
             return Verdict(False, reason), None
 
@@ -364,6 +459,8 @@ def verify_signed_message(cms_der: bytes, signed_extent: bytes, keys: CertifiedK
     # 3a: id-atsc-kp-signalingSigning EKU.
     if not signer.signaling_eku():
         return Verdict(False, "signer lacks id-atsc-kp-signalingSigning EKU")
+    if _is_ca(signer):
+        return Verdict(False, "signer must not be a CA")
 
     # 3b: the SDA bsid set equals the SLT's.
     cert_bsids = signer.bsids()
@@ -372,7 +469,12 @@ def verify_signed_message(cms_der: bytes, signed_extent: bytes, keys: CertifiedK
                        f"signer bsid set {cert_bsids} != SLT bsid set "
                        f"{tuple(sorted(int(b) for b in slt_bsids))}")
 
-    # 3d: the signer is unexpired.
+    # 3d: the signer is unexpired, and the claimed SigningTime is inside its
+    # validity period.
+    if sig.signing_time < signer.cert.not_valid_before_utc:
+        return Verdict(False, "SigningTime before signer certificate validity")
+    if sig.signing_time > signer.cert.not_valid_after_utc:
+        return Verdict(False, "SigningTime after signer certificate validity")
     reason = _check_validity(signer, now)
     if reason:
         return Verdict(False, reason)

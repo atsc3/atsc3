@@ -4,7 +4,6 @@ import hashlib
 import json
 
 import pytest
-from cryptography.exceptions import InvalidSignature
 
 from openatsc3_pki import ca, cli, keys, rotation, x509
 from openatsc3_pki.x509 import SubjectInfo
@@ -47,7 +46,7 @@ def test_signed_minutes_need_the_issuer():
     with pytest.raises(ValueError):
         rotation.verify_minutes(signed)  # signature present, no issuer
     other = x509.issue_root(_subject(), keys.generate(keys.ROOT_CURVE))
-    with pytest.raises(InvalidSignature):
+    with pytest.raises(ValueError):
         rotation.verify_minutes(signed, other)
 
 
@@ -66,6 +65,16 @@ def test_rotation_bundle_is_self_described(tmp_path):
         hashlib.sha256(files["new-root.cert.pem"]).hexdigest()
     assert manifest["certificates"]["cross"]["issuer"] == \
         old.load_root().subject.rfc4514_string()
+
+
+def test_rotation_bundle_rejects_mismatched_cross(tmp_path):
+    old, new = _roots(tmp_path)
+    other = ca.CertificateAuthority(str(tmp_path / "other"))
+    other.init_root(common_name="Other Root")
+    cross = x509.cross_sign_root(other.load_root(), old.load_root(),
+                                 old.load_root_key())
+    with pytest.raises(ValueError, match="new root key"):
+        rotation.rotation_bundle(new.load_root(), cross, old.load_root())
 
 
 def test_cli_rotation_bundle_and_minutes(tmp_path):

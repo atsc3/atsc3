@@ -70,6 +70,11 @@ def _public_key_hash(cert: Certificate) -> bytes:
     return hashlib.sha1(bit_string.native).digest()
 
 
+def public_key_hash(cert: Certificate) -> bytes:
+    """The RFC 6960 ``KeyHash`` for ``cert`` (SHA-1 of its public-key bits)."""
+    return _public_key_hash(cert)
+
+
 def _cert_id(cert: Certificate, issuer: Certificate) -> _asn1_ocsp.CertId:
     return _asn1_ocsp.CertId({
         "hash_algorithm": algos.DigestAlgorithm({"algorithm": "sha1"}),

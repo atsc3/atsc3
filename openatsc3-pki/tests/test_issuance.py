@@ -36,7 +36,19 @@ def test_issuing_ca_profile(tmp_path):
     bc = issuing.cert.extensions.get_extension_for_class(
         x509.BasicConstraints).value
     assert bc.ca is True
+    assert bc.path_length == 0
     assert issuing.cert.issuer == root.cert.subject
+
+
+def test_tenant_ca_is_path_length_zero(tmp_path):
+    a = ca.CertificateAuthority(str(tmp_path / "ca"))
+    a.init_root()
+    tenant = a.issue_tenant_ca("acme")
+    from cryptography import x509
+    bc = tenant.cert.extensions.get_extension_for_class(
+        x509.BasicConstraints).value
+    assert bc.ca is True
+    assert bc.path_length == 0
 
 
 def test_signaling_signer_profile(tmp_path):
@@ -55,6 +67,21 @@ def test_signaling_signer_profile(tmp_path):
     assert x509.ObjectIdentifier(ID_ATSC_KP_SIGNALING_SIGNING) in eku.value
     assert cert.bsids() == (540, 541)
     assert cert.signaling_eku()
+
+
+def test_signaling_signer_dedupes_bsids(tmp_path):
+    a = ca.CertificateAuthority(str(tmp_path / "ca"))
+    a.init_root()
+    a.issue_issuing()
+    cert = a.issue_broadcaster("WHUT", (540, 540))
+    assert cert.bsids() == (540,)
+
+
+def test_root_can_be_p521():
+    root = issue_root(
+        SubjectInfo(common_name="P-521 Root", organizational_unit="ATSC",
+                    organization="OpenATSC3"), keys.generate("secp521r1"))
+    assert root.cert.public_key().curve.name == "secp521r1"
 
 
 def test_sda_roundtrip():
@@ -78,6 +105,16 @@ def test_private_key_permissions(tmp_path):
     import os
     mode = os.stat(a.root_key_path).st_mode & 0o777
     assert mode == 0o600
+
+
+def test_private_key_permissions_tightened_on_overwrite(tmp_path):
+    import os
+
+    path = tmp_path / "key.pem"
+    path.write_bytes(b"not a key")
+    os.chmod(path, 0o644)
+    keys.write_private(str(path), keys.generate())
+    assert os.stat(path).st_mode & 0o777 == 0o600
 
 
 def test_published_atsc_cdt_bsid_decodes():

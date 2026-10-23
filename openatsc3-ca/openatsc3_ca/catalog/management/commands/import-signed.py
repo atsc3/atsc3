@@ -22,6 +22,8 @@ class Command(AuditCommand):
         parser.add_argument("--name", default=None,
                             help="broadcaster name (for signer leaves)")
         parser.add_argument("--kms-key-id", default="")
+        parser.add_argument("--key", default="",
+                            help="signing key PEM for a leaf (or use --kms-key-id)")
         parser.add_argument("--responder", action="store_true",
                             help="register the cert as an active OCSP responder")
 
@@ -43,7 +45,7 @@ class Command(AuditCommand):
         cert = services.import_signed_certificate(
             Path(options["cert"]).read_bytes(), options["profile"],
             tenant=tenant, broadcaster=broadcaster,
-            kms_key_id=options["kms_key_id"],
+            kms_key_id=options["kms_key_id"], key_path=options["key"],
             make_responder=options["responder"], actor=options["actor"])
         self.stdout.write(self.style.SUCCESS(
             f"imported {cert.profile}: serial={cert.serial} "

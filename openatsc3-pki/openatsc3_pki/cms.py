@@ -59,6 +59,16 @@ def _digest(curve: str, data: bytes) -> bytes:
     return h.finalize()
 
 
+def _same_public(a, b) -> bool:
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+    def der(public):
+        return public.public_bytes(
+            Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+
+    return der(a) == der(b)
+
+
 def sign_detached(signed_bytes: bytes, cert, key,
                   signing_time: Optional[_dt.datetime] = None) -> bytes:
     """Return a detached CMS SignedData (ContentInfo DER) over ``signed_bytes``.
@@ -72,6 +82,8 @@ def sign_detached(signed_bytes: bytes, cert, key,
         signing_time = _dt.datetime.now(_dt.timezone.utc)
     signing_time = signing_time.replace(microsecond=0)
     signer = _signer.as_signer(key)
+    if not _same_public(cert.cert.public_key(), signer.public):
+        raise ValueError("signing key does not match the signer certificate")
     curve = signer.curve
     if curve not in _SIG_ALG:
         raise ValueError(f"curve {curve} is not a permitted signing curve")

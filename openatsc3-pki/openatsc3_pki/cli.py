@@ -10,10 +10,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
 from pathlib import Path
+
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from . import ca as ca_mod
 from . import oids
@@ -24,9 +27,25 @@ def _write_0600(path: str, data: bytes) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
+        os.fchmod(fd, 0o600)
         os.write(fd, data)
     finally:
         os.close(fd)
+
+
+def _public_der(public) -> bytes:
+    return public.public_bytes(
+        Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+
+
+def _expected_public(path):
+    from . import x509
+    with open(path, "rb") as fh:
+        return x509.load_pem(fh.read()).cert.public_key()
+
+
+def _matches_expected(key, expected) -> bool:
+    return _public_der(key.public) == _public_der(expected)
 
 
 def _ca(args) -> ca_mod.CertificateAuthority:
@@ -93,14 +112,26 @@ def _load_signer_key(key_path, share_paths):
 
 def cmd_sign_request(args) -> int:
     """Offline: sign a ceremony request with a CA key, or a k-of-n quorum of shares."""
-    from . import ceremony
+    from . import ceremony, x509
 
     key = _load_signer_key(args.key, args.shares)
     if key is None:
         return 2
+    if args.issuer and not _matches_expected(key, _expected_public(args.issuer)):
+        print("error: quorum/key does not match the expected issuer certificate",
+              file=sys.stderr)
+        return 2
     with open(args.request, "rb") as fh:
         request = fh.read()
-    cert = ceremony.sign_request(request, key)
+    issuer = None
+    if args.issuer:
+        with open(args.issuer, "rb") as fh:
+            issuer = x509.load_pem(fh.read())
+    try:
+        cert = ceremony.sign_request(request, key, issuer=issuer)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     data = cert.pem() if args.out.endswith(".pem") else cert.der()
     _write_0600(args.out, data)
     print(f"signed request -> {args.out}")
@@ -133,21 +164,25 @@ def cmd_cross_sign(args) -> int:
 
 def cmd_quorum_split(args) -> int:
     """Split a root key into n shares with threshold k (air-gapped quorum custody)."""
-    from . import quorum
+    from . import keys, quorum
 
     with open(args.key, "rb") as fh:
         secret = fh.read()
-    shares = quorum.split(secret, args.threshold, args.shares)
+    try:
+        keys.load_private_bytes(secret)
+        shares = quorum.split(secret, args.threshold, args.shares)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if quorum.combine(shares[:args.threshold]) != secret:
+        print("error: self-check failed; nothing written", file=sys.stderr)
+        return 2
     out_dir = Path(args.out_dir)
     written = []
     for index, share in enumerate(shares, start=1):
         path = str(out_dir / f"share-{index}")
         _write_0600(path, share)
         written.append(path)
-    if quorum.combine(shares[:args.threshold]) != secret:
-        print("error: self-check failed; shares not written correctly",
-              file=sys.stderr)
-        return 2
     print(f"wrote {len(written)} shares ({args.threshold}-of-{args.shares}) "
           f"to {out_dir}")
     print("verify a quorum reconstructs, then destroy the original key media.")
@@ -156,12 +191,18 @@ def cmd_quorum_split(args) -> int:
 
 def cmd_quorum_combine(args) -> int:
     """Reconstruct a key from shares (recovery/HSM import)."""
-    from . import quorum
+    from . import keys, quorum
 
     try:
         secret = quorum.combine(_read_shares(args.shares))
+        key = keys.load_private_bytes(secret)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if args.expect_cert and not _matches_expected(
+            key, _expected_public(args.expect_cert)):
+        print("error: shares do not reconstruct the expected key",
+              file=sys.stderr)
         return 2
     _write_0600(args.out, secret)
     print(f"reconstructed key -> {args.out} (0600)")
@@ -176,10 +217,15 @@ def cmd_quorum_reshare(args) -> int:
     try:
         new = quorum.reshare(old, args.threshold, args.shares_out)
         secret = quorum.combine(old)
-        keys.load_private_bytes(secret)
+        key = keys.load_private_bytes(secret)
     except ValueError:
         print("error: shares did not reconstruct a valid key "
               "(need at least the threshold); nothing written", file=sys.stderr)
+        return 2
+    if args.expect_cert and not _matches_expected(
+            key, _expected_public(args.expect_cert)):
+        print("error: shares do not reconstruct the expected key; nothing written",
+              file=sys.stderr)
         return 2
     out_dir = Path(args.out_dir)
     written = []
@@ -205,6 +251,11 @@ def cmd_quorum_verify(args) -> int:
         key = keys.load_private_bytes(quorum.combine(_read_shares(args.shares)))
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if args.expect_cert and not _matches_expected(
+            key, _expected_public(args.expect_cert)):
+        print("error: shares do not reconstruct the expected key",
+              file=sys.stderr)
         return 2
     print(f"ok: {len(args.shares)} shares reconstruct a valid {key.curve} key")
     return 0
@@ -294,11 +345,23 @@ def cmd_rotation_bundle(args) -> int:
 
 
 def _print_cert(cert) -> None:
+    from cryptography import x509 as _cx509
+
+    try:
+        bc = cert.cert.extensions.get_extension_for_class(
+            _cx509.BasicConstraints).value
+        ca = f"{bc.ca} (pathLen={bc.path_length})"
+    except _cx509.ExtensionNotFound:
+        ca = "absent"
+    public = cert.cert.public_key().public_bytes(
+        Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
     print(cert.cert.subject.rfc4514_string())
     print(f"  issuer:    {cert.cert.issuer.rfc4514_string()}")
     print(f"  serial:    {cert.cert.serial_number}")
     print(f"  notBefore: {cert.cert.not_valid_before_utc.isoformat()}")
     print(f"  notAfter:  {cert.cert.not_valid_after_utc.isoformat()}")
+    print(f"  basicConstraints: {ca}")
+    print(f"  publicKeySha256:  {hashlib.sha256(public).hexdigest()}")
     print(f"  bsids:     {cert.bsids()}")
     print(f"  signaling EKU: {cert.signaling_eku()}")
     print(f"  SKI: {cert.subject_key_identifier().hex()}")
@@ -342,6 +405,8 @@ def build_parser() -> argparse.ArgumentParser:
     source.add_argument("--key", help="issuing/root private key PEM")
     source.add_argument("--shares", nargs="+", metavar="SHARE",
                         help="k-of-n quorum shares (>= the threshold)")
+    p.add_argument("--issuer", default=None,
+                   help="expected issuer certificate PEM (binds key/request)")
     p.add_argument("--out", required=True, help="output certificate (.pem or .der)")
     p.set_defaults(func=cmd_sign_request)
 
@@ -371,6 +436,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="reconstruct a key from shares (recovery/import)")
     p.add_argument("--shares", nargs="+", required=True, metavar="SHARE")
     p.add_argument("--out", required=True, help="output key PEM (0600)")
+    p.add_argument("--expect-cert", default=None,
+                   help="expected issuer/root certificate PEM")
     p.set_defaults(func=cmd_quorum_combine)
 
     p = subs.add_parser("quorum-reshare",
@@ -381,11 +448,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--shares-out", type=int, required=True,
                    help="n fresh shares to create")
     p.add_argument("--out-dir", required=True, help="directory for new share-N files")
+    p.add_argument("--expect-cert", default=None,
+                   help="expected issuer/root certificate PEM")
     p.set_defaults(func=cmd_quorum_reshare)
 
     p = subs.add_parser("quorum-verify",
                         help="check that shares reconstruct a valid key (no output)")
     p.add_argument("--shares", nargs="+", required=True, metavar="SHARE")
+    p.add_argument("--expect-cert", default=None,
+                   help="expected issuer/root certificate PEM")
     p.set_defaults(func=cmd_quorum_verify)
 
     p = subs.add_parser("minutes",

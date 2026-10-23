@@ -109,15 +109,17 @@ def test_kms_for_key_accepts_injected_client():
 
 def test_kms_signed_ocsp_and_revocation():
     now = _now()
-    root = issue_root(_subject("Root", "OpenATSC3"), kms(keys.ROOT_CURVE))
-    ca = issue_ca(_subject("Issuing", "OpenATSC3"), kms(keys.CA_CURVE),
-                  root, kms(keys.ROOT_CURVE))
+    root_signer = kms(keys.ROOT_CURVE)
+    root = issue_root(_subject("Root", "OpenATSC3"), root_signer)
+    ca_signer = kms(keys.CA_CURVE)
+    ca = issue_ca(_subject("Issuing", "OpenATSC3"), ca_signer,
+                  root, root_signer)
     leaf = issue_signaling_signer(
         _subject("WHUT-LLS-Signer", "WHUT"), kms(keys.SIGNER_CURVE),
-        ca, kms(keys.CA_CURVE), (_BSID,))
+        ca, ca_signer, (_BSID,))
     responder_signer = kms(keys.SIGNER_CURVE)
     responder = issue_ocsp_responder(
-        _subject("OCSP", "OpenATSC3"), responder_signer, ca, kms(keys.CA_CURVE))
+        _subject("OCSP", "OpenATSC3"), responder_signer, ca, ca_signer)
 
     store = ocsp.StatusStore()
     good = ocsp.respond(leaf, ca, responder, responder_signer, store,

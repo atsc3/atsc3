@@ -29,11 +29,13 @@ from openatsc3_pki import ceremony as pki_ceremony
 from openatsc3_pki import crl as pki_crl
 from openatsc3_pki import keys as pki_keys
 from openatsc3_pki import ocsp as pki_ocsp
+from openatsc3_pki import verify as pki_verify
 from openatsc3_pki import x509 as pki_x509
 from openatsc3_pki.x509 import Certificate as X509Certificate
 from openatsc3_pki.x509 import SubjectInfo
 from cryptography import x509 as _x509
-from cryptography.x509.oid import ExtensionOID, NameOID
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+from cryptography.x509.oid import ExtendedKeyUsageOID, ExtensionOID, NameOID
 
 from .constants import (
     OCSP_REFRESH_DEFAULT,
@@ -136,6 +138,22 @@ class CertRecordResult:
     created: bool
 
 
+def _ensure_serial_available(serial: str, der: bytes) -> None:
+    """Reject a different certificate that reuses an existing serial.
+
+    Fail closed when the existing artifact is missing: without the DER there is
+    no way to prove the row is the same certificate.
+    """
+    existing = Certificate.objects.filter(serial=serial).first()
+    if existing is None:
+        return
+    if existing.der_file and os.path.exists(existing.der_file):
+        if Path(existing.der_file).read_bytes() == der:
+            return
+    raise ValueError(
+        f"serial {serial} is already used by a different certificate")
+
+
 def record_certificate(cert: X509Certificate, profile: str, *,
                        key_path: str = "", kms_key_id: str = "",
                        broadcaster: Optional[Broadcaster] = None,
@@ -149,19 +167,26 @@ def record_certificate(cert: X509Certificate, profile: str, *,
     imported chains link up without the caller passing parents explicitly.
     A key is recorded either as a 0600 file (``key_path`` + its SHA-256) or as a
     KMS key id (``kms_key_id``); a KMS key never touches the filesystem.
+
+    A serial may only be re-recorded for the identical certificate; reusing it
+    for different DER (an attacker-controlled ceremony request, or a collision)
+    is rejected before any file is overwritten.
     """
     serial = str(cert.cert.serial_number)
+    der_bytes = cert.der()
+    subject = cert.cert.subject
+    ski = cert.subject_key_identifier().hex()
+    _ensure_serial_available(serial, der_bytes)
     if der_file is None:
         der_path = _certs_dir() / f"{serial}.der"
-        _write_bytes(der_path, cert.der())
+        _write_bytes(der_path, der_bytes)
         der_file = str(der_path)
 
-    if parent is None:
+    if parent is None and profile != Profile.ROOT:
         aki = _aki_hex(cert)
         if aki:
             parent = Certificate.objects.filter(ski=aki).first()
 
-    subject = cert.cert.subject
     defaults = {
         "subject_dn": subject.rfc4514_string(),
         "common_name": _name_attr(subject, NameOID.COMMON_NAME),
@@ -171,7 +196,7 @@ def record_certificate(cert: X509Certificate, profile: str, *,
         "not_before": cert.cert.not_valid_before_utc,
         "not_after": cert.cert.not_valid_after_utc,
         "der_file": der_file,
-        "ski": cert.subject_key_identifier().hex(),
+        "ski": ski,
         "aki": _aki_hex(cert),
         "bsids": list(cert.bsids()),
         "eku": _eku_oids(cert),
@@ -531,8 +556,7 @@ def request_tenant_ca(tenant: Tenant, *, common_name: Optional[str] = None,
         common_name=common_name or f"{tenant.slug} Intermediate CA",
         organizational_unit="ATSC Trust Authority",
         organization=_name_attr(root.cert.subject, NameOID.ORGANIZATION_NAME))
-    request = pki_ceremony.ca_request(subject, public, root, days=days,
-                                      curve=pki_keys.ROOT_CURVE)
+    request = pki_ceremony.ca_request(subject, public, root, days=days)
     audit("request-tenant-ca", actor=actor, target=tenant,
           detail={"tenant": tenant.slug, "kms": bool(kms_key_id)})
     return request
@@ -554,11 +578,132 @@ def request_root_responder(*, common_name: str = "OpenATSC3 Root OCSP Responder"
         common_name=common_name,
         organizational_unit="ATSC OCSP Responder",
         organization=_name_attr(root.cert.subject, NameOID.ORGANIZATION_NAME))
-    request = pki_ceremony.responder_request(subject, public, root, days=days,
-                                             curve=pki_keys.ROOT_CURVE)
+    request = pki_ceremony.responder_request(subject, public, root, days=days)
     audit("request-root-responder", actor=actor,
           detail={"cn": common_name, "kms": bool(kms_key_id)})
     return request
+
+
+def _latest_good(profile: str, tenant: Optional[Tenant] = None) -> Optional[Certificate]:
+    qs = Certificate.objects.filter(profile=profile, status=CertStatus.GOOD)
+    if tenant is not None:
+        qs = qs.filter(tenant=tenant)
+    return qs.order_by("-created_at").first()
+
+
+def _expected_parent(profile: str, tenant: Optional[Tenant],
+                     broadcaster: Optional[Broadcaster]) -> Optional[Certificate]:
+    if profile == Profile.ROOT:
+        return None
+    if profile in (Profile.ISSUING_CA, Profile.TENANT_CA):
+        parent = Certificate.objects.filter(
+            profile=Profile.ROOT, status=CertStatus.GOOD).order_by(
+                "-created_at").first()
+        if parent is None:
+            raise ValueError("no root certificate in the ledger")
+        return parent
+    if profile == Profile.OCSP_RESPONDER:
+        if tenant is not None:
+            parent = _tenant_ca_cert(tenant)
+        else:
+            parent = Certificate.objects.filter(
+                profile=Profile.ROOT, status=CertStatus.GOOD).order_by(
+                    "-created_at").first()
+        if parent is None:
+            raise ValueError("no issuer for the OCSP responder")
+        return parent
+    if profile in (Profile.SIGNALING_SIGNER, Profile.CDT_SIGNER):
+        if broadcaster is None:
+            raise ValueError(f"profile {profile} requires a broadcaster")
+        if tenant is not None:
+            parent = _tenant_ca_cert(tenant)
+        else:
+            parent = _latest_good(Profile.ISSUING_CA)
+        if parent is None:
+            raise ValueError(f"no issuer for the {profile} leaf")
+        return parent
+    raise ValueError(f"unknown certificate profile {profile!r}")
+
+
+def _public_der(public) -> bytes:
+    return public.public_bytes(
+        Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+
+
+def _verify_import_key(cert: X509Certificate, profile: str,
+                       tenant: Optional[Tenant], kms_key_id: str,
+                       key_path: str) -> str:
+    if profile == Profile.ROOT:
+        return key_path
+    if kms_key_id:
+        signer = _signer_for(None, kms_key_id)
+        public = signer.public
+    else:
+        path = key_path or _local_key_path(profile, tenant)
+        if not path or not os.path.exists(path):
+            raise ValueError(
+                f"no signing key for {profile}; pass --key or --kms-key-id")
+        public = pki_keys.load_private(path).public
+        key_path = path
+    if _public_der(public) != _public_der(cert.cert.public_key()):
+        raise ValueError("certificate public key does not match the signing key")
+    return key_path
+
+
+def _verify_imported(cert: X509Certificate, profile: str,
+                     tenant: Optional[Tenant], broadcaster: Optional[Broadcaster],
+                     parent: Optional[Certificate]) -> None:
+    now = timezone.now()
+    if cert.cert.not_valid_before_utc > now:
+        raise ValueError("certificate is not yet valid")
+    if cert.cert.not_valid_after_utc < now:
+        raise ValueError("certificate is expired")
+    if profile == Profile.ROOT:
+        if cert.cert.subject != cert.cert.issuer:
+            raise ValueError("root certificate must be self-issued")
+        if not pki_verify.is_ca(cert):
+            raise ValueError("root certificate must be a CA")
+        if not pki_verify.signed_by(cert, cert):
+            raise ValueError("root certificate is not self-signed")
+        return
+    if parent is None:
+        raise ValueError("no expected parent certificate")
+    parent_x509 = certificate_x509(parent)
+    if cert.cert.issuer != parent_x509.cert.subject:
+        raise ValueError("certificate issuer does not match the expected parent")
+    if not pki_verify.signed_by(cert, parent_x509):
+        raise ValueError("certificate is not signed by the expected parent")
+    if profile in (Profile.ISSUING_CA, Profile.TENANT_CA):
+        if not pki_verify.is_ca(cert):
+            raise ValueError(f"{profile} certificate must be a CA")
+        if pki_verify.path_length(cert) != 0:
+            raise ValueError(f"{profile} certificate must have pathLen 0")
+    elif profile == Profile.OCSP_RESPONDER:
+        if pki_verify.is_ca(cert):
+            raise ValueError("OCSP responder certificate must not be a CA")
+        try:
+            eku = cert.cert.extensions.get_extension_for_class(
+                _x509.ExtendedKeyUsage).value
+        except _x509.ExtensionNotFound:
+            raise ValueError("OCSP responder lacks an extended key usage") from None
+        if ExtendedKeyUsageOID.OCSP_SIGNING not in eku:
+            raise ValueError("OCSP responder lacks id-kp-OCSPSigning")
+    elif profile == Profile.SIGNALING_SIGNER:
+        if pki_verify.is_ca(cert):
+            raise ValueError("signaling signer must not be a CA")
+        if not cert.signaling_eku():
+            raise ValueError("signaling signer lacks id-atsc-kp-signalingSigning")
+        if not cert.bsids():
+            raise ValueError("signaling signer carries no bsid")
+    elif profile == Profile.CDT_SIGNER:
+        if pki_verify.is_ca(cert):
+            raise ValueError("CDT signer must not be a CA")
+        if not cert.signaling_eku():
+            raise ValueError("CDT signer lacks the required signing EKU")
+        if not cert.bsids():
+            raise ValueError("CDT signer carries no bsid")
+    else:
+        raise ValueError(f"unknown certificate profile {profile!r}")
 
 
 def import_signed_certificate(data: bytes, profile: str, *,
@@ -570,16 +715,22 @@ def import_signed_certificate(data: bytes, profile: str, *,
     """Record a certificate signed offline by the root into the ledger.
 
     ``data`` is the DER/PEM returned from the air-gapped signing step.  The
-    ``parent`` is linked from the certificate's AuthorityKeyIdentifier, so the
-    ledger chain (root -> tenant CA -> leaves) is reconstructed automatically.
+    certificate is verified against the expected parent, the signing key, and
+    its profile before anything is written; the ledger chain (root -> tenant CA
+    -> leaves) is linked explicitly, not just by AuthorityKeyIdentifier.
     """
     cert = (pki_x509.load_pem(data) if data.lstrip().startswith(b"-----")
             else pki_x509.load_der(data))
+    if make_responder and profile != Profile.OCSP_RESPONDER:
+        raise ValueError("only an ocsp-responder can be registered as a responder")
+    parent = _expected_parent(profile, tenant, broadcaster)
+    key_path = _verify_import_key(cert, profile, tenant, kms_key_id, key_path)
+    _verify_imported(cert, profile, tenant, broadcaster, parent)
     if not key_path:
         key_path = "" if kms_key_id else _local_key_path(profile, tenant)
     key_sha = sha256_file(key_path) if key_path and os.path.exists(key_path) else ""
     with transaction.atomic():
-        result = record_certificate(cert, profile, tenant=tenant,
+        result = record_certificate(cert, profile, parent=parent, tenant=tenant,
                                     broadcaster=broadcaster, key_path=key_path,
                                     kms_key_id=kms_key_id)
         out = _local_cert_path(profile, tenant)

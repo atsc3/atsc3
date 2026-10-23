@@ -90,6 +90,48 @@ def test_quorum_reshare_and_verify(tmp_path):
         ec.ECDSA(signed.cert.signature_hash_algorithm))
 
 
+def test_quorum_verify_rejects_wrong_expected_key(tmp_path):
+    authority = ca.CertificateAuthority(str(tmp_path / "ca"))
+    authority.init_root()
+    shares_dir = tmp_path / "shares"
+    assert cli.main(["quorum-split", "--key", authority.root_key_path,
+                     "--threshold", "3", "--shares", "5",
+                     "--out-dir", str(shares_dir)]) == 0
+    shares = [str(shares_dir / f"share-{i}") for i in (1, 2, 3)]
+    other = ca.CertificateAuthority(str(tmp_path / "other"))
+    other.init_root(common_name="Other Root")
+    assert cli.main(["quorum-verify", "--shares", *shares,
+                     "--expect-cert", other.root_cert_path]) == 2
+
+
+def test_quorum_split_rejects_non_key_input(tmp_path):
+    bad = tmp_path / "not-a-key.pem"
+    bad.write_bytes(b"not a private key")
+    out = tmp_path / "shares"
+    assert cli.main(["quorum-split", "--key", str(bad), "--threshold", "3",
+                     "--shares", "5", "--out-dir", str(out)]) == 2
+    assert not out.exists()
+
+
+def test_quorum_combine_rejects_bad_shares(tmp_path):
+    authority = ca.CertificateAuthority(str(tmp_path / "ca"))
+    authority.init_root()
+    shares_dir = tmp_path / "shares"
+    cli.main(["quorum-split", "--key", authority.root_key_path,
+              "--threshold", "3", "--shares", "5", "--out-dir", str(shares_dir)])
+    shares = [str(shares_dir / f"share-{i}") for i in (1, 2, 3)]
+    out = tmp_path / "combined.pem"
+    assert cli.main(["quorum-combine", "--shares", *shares,
+                     "--out", str(out)]) == 0
+    assert out.exists()
+    other = ca.CertificateAuthority(str(tmp_path / "other"))
+    other.init_root(common_name="Other Root")
+    assert cli.main(["quorum-combine", "--shares", *shares,
+                     "--out", str(tmp_path / "wrong.pem"),
+                     "--expect-cert", other.root_cert_path]) == 2
+    assert not (tmp_path / "wrong.pem").exists()
+
+
 def test_quorum_reshare_below_threshold_writes_nothing(tmp_path):
     authority = ca.CertificateAuthority(str(tmp_path / "ca"))
     authority.init_root()

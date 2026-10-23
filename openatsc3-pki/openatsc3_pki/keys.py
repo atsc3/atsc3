@@ -93,6 +93,7 @@ def write_private(path: str, key: KeyPair, password: Optional[bytes] = None) -> 
     data = private_bytes(key, password)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
+        os.fchmod(fd, 0o600)
         os.write(fd, data)
     finally:
         os.close(fd)

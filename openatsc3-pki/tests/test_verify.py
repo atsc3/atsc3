@@ -4,7 +4,7 @@ import datetime as dt
 
 import pytest
 
-from openatsc3_pki import cdt, cms, keys, ocsp, verify
+from openatsc3_pki import cdt, cms, keys, ocsp, verify, x509
 from openatsc3_pki.x509 import (
     SubjectInfo,
     issue_ocsp_responder,
@@ -59,6 +59,18 @@ def test_tampered_cdt_signature_fails(signed_cdt):
     assert not v.ok
 
 
+def test_tobesigned_must_match_parsed_fields(signed_cdt):
+    table = signed_cdt["cdt"]
+    forged = cdt.CertificationData(
+        certificates=table.certificates[:-1], current_cert=table.current_cert,
+        cmssigneddata=table.cmssigneddata, ocsp_responses=table.ocsp_responses,
+        ocsp_refresh=table.ocsp_refresh, tobesigned=table.tobesigned)
+    v, _ = verify.verify_certification_data(forged, [signed_cdt["root"]],
+                                            now=signed_cdt["now"])
+    assert not v.ok
+    assert "does not match" in v.reason
+
+
 def test_cdt_signer_equals_current_fails(signed_cdt):
     """A/360 5.2.2.2 item 3: the CDT key must differ from the signaling key."""
     signer = signed_cdt["signer"]
@@ -86,7 +98,7 @@ def test_revoked_signer_ocsp_fails(signed_cdt):
     resp_cert = issue_ocsp_responder(
         SubjectInfo(common_name="Revoker", organizational_unit="ATSC OCSP Responder",
                     organization="OpenATSC3"),
-        resp_key, issuing, signed_cdt["signer_key"])
+        resp_key, issuing, signed_cdt["issuing_key"])
     store = ocsp.StatusStore()
     store.mark_revoked(signer.cert.serial_number, signed_cdt["now"])
     revoked = ocsp.respond(signer, issuing, resp_cert, resp_key, store,
@@ -110,6 +122,60 @@ def test_revoked_signer_ocsp_fails(signed_cdt):
                                             now=signed_cdt["now"])
     assert not v.ok
     assert "status is not good" in v.reason or "revoked" in v.reason
+
+
+def test_forged_same_subject_ocsp_responder_fails(signed_cdt):
+    """A self-signed responder copying the issuer's subject is not the issuer."""
+    from cryptography.x509 import ocsp as _ocsp
+
+    root = signed_cdt["root"]
+    issuing = signed_cdt["issuing"]
+    forged_key = keys.generate(keys.ROOT_CURVE)
+    forged = x509.issue_root(
+        SubjectInfo(common_name="OpenATSC3 Root CA",
+                    organizational_unit="ATSC Trust Authority",
+                    organization="OpenATSC3"), forged_key)
+    assert forged.subject == root.subject
+    assert forged.der() != root.der()
+    good = ocsp.respond(issuing, root, forged, forged_key, ocsp.StatusStore(),
+                        this_update=signed_cdt["now"],
+                        next_update=signed_cdt["now"] + dt.timedelta(hours=20))
+    table = signed_cdt["cdt"]
+    ocsps = []
+    for der in table.ocsp_responses:
+        parsed = _ocsp.load_der_ocsp_response(der)
+        if any(s.serial_number == issuing.cert.serial_number
+               for s in parsed.responses):
+            ocsps.append(good)
+        else:
+            ocsps.append(der)
+    forged_table = cdt.CertificationData(
+        certificates=table.certificates, current_cert=table.current_cert,
+        cmssigneddata=table.cmssigneddata, ocsp_responses=tuple(ocsps),
+        ocsp_refresh=table.ocsp_refresh, tobesigned=table.tobesigned)
+    v, _ = verify.verify_certification_data(forged_table, [root],
+                                            now=signed_cdt["now"])
+    assert not v.ok
+    assert "responder" in v.reason
+
+
+def test_find_chain_rejects_non_ca_issuer(tmp_path):
+    """A CA=false signaling leaf cannot be used as an intermediate."""
+    from openatsc3_pki import ca
+
+    a = ca.CertificateAuthority(str(tmp_path / "ca"))
+    a.init_root()
+    a.issue_tenant_ca("acme")
+    a.issue_broadcaster("ACME-TV", (540,), tenant="acme")
+    root = a.load_root()
+    tenant_ca = a.load_tenant("acme")
+    leaf = a.load_broadcaster("ACME-TV", tenant="acme")
+    leaf_key = a.load_broadcaster_key("ACME-TV", tenant="acme")
+    forged = x509.issue_ca(
+        SubjectInfo(common_name="Forged CA", organizational_unit="x",
+                    organization="x"), keys.generate(keys.CA_CURVE),
+        leaf, leaf_key)
+    assert verify._find_chain(forged, [root], [tenant_ca, leaf, forged]) is None
 
 
 def test_stale_ocsp_fails(signed_cdt):
@@ -273,6 +339,39 @@ def test_expired_ocsp_responder_fails(authority, now):
     later = now + dt.timedelta(days=2)
     reason = verify._verify_ocsp(der, leaf, issuing, later, dt.timedelta(hours=20))
     assert reason and "responder" in reason and "expired" in reason
+
+
+def test_ocsp_cert_id_must_match_the_issuer(authority, now, tmp_path):
+    """A response for a different issuer (same serial) is not accepted."""
+    from openatsc3_pki import ca
+
+    issuing = authority.load_issuing()
+    leaf = authority.load_broadcaster("WHUT")
+    resp_key = keys.generate()
+    resp_cert = issue_ocsp_responder(
+        SubjectInfo(common_name="OCSP", organizational_unit="ATSC OCSP Responder",
+                    organization="OpenATSC3"),
+        resp_key, issuing, authority.load_issuing_key())
+    der = ocsp.respond(leaf, issuing, resp_cert, resp_key, ocsp.StatusStore(),
+                       this_update=now, next_update=now + dt.timedelta(hours=20))
+    other = ca.CertificateAuthority(str(tmp_path / "other"))
+    other.init_root()
+    other.issue_issuing()
+    reason = verify._verify_ocsp(der, leaf, other.load_issuing(), now,
+                                 dt.timedelta(hours=20))
+    assert reason and "issuer" in reason
+
+
+def test_signing_time_before_certificate_validity_fails(signed_cdt, signed_smt):
+    _, certified = _verify(signed_cdt)
+    early = (signed_cdt["signer"].cert.not_valid_before_utc
+             - dt.timedelta(minutes=5))
+    blob = cms.sign_detached(signed_smt.signed_extent, signed_cdt["signer"],
+                             signed_cdt["signer_key"], signing_time=early)
+    v = verify.verify_signed_message(blob, signed_smt.signed_extent, certified,
+                                     [540], now=signed_cdt["now"])
+    assert not v.ok
+    assert "validity" in v.reason
 
 
 def test_missing_signaling_eku_fails(tmp_path):

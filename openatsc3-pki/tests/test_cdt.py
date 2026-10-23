@@ -2,6 +2,8 @@
 
 import datetime as dt
 
+import pytest
+
 from openatsc3_pki import cdt
 
 
@@ -27,6 +29,13 @@ def test_cdt_root_not_included(signed_cdt):
     from openatsc3_pki.x509 import load_der
     subjects = {load_der(d).subject for d in signed_cdt["cdt"].certificates}
     assert signed_cdt["root"].subject not in subjects
+
+
+def test_cdt_parser_rejects_dtd():
+    body = (b'<!DOCTYPE x [<!ENTITY y "z">]>'
+            b'<CertificationData><ToBeSignedData/></CertificationData>')
+    with pytest.raises(ValueError, match="DTD"):
+        cdt.parse_certification_data(body)
 
 
 def test_signed_multitable_roundtrip(signed_smt):

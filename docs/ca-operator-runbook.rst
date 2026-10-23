@@ -81,8 +81,9 @@ SHA-1 SubjectKeyIdentifier, not-after, curve ``secp384r1``).  Split the key:
    openatsc3-pki quorum-split --key ca/root/root.key.pem \
        --threshold 3 --shares 5 --out-dir custody/shares
 
-``quorum-split`` self-checks that a quorum reconstructs before writing; if the
-check fails it aborts.  Then:
+``quorum-split`` validates that the input is an ECDSA private key and
+self-checks that a quorum reconstructs **before writing**; if the check fails it
+aborts.  Then:
 
 #. Give each custodian one ``share-N`` file; record each share's SHA-256 in the
    share-receipt log.
@@ -122,7 +123,7 @@ Air-gapped — three custodians present their shares; review the request, then s
 
    openatsc3-pki sign-request --request acme.req.der \
        --shares custody/shares/share-1 custody/shares/share-3 custody/shares/share-5 \
-       --out acme.pem
+       --issuer ca/root/root.cert.pem --out acme.pem
 
 Fewer than three shares fail (a quorum is required).  Online — record the result:
 
@@ -130,11 +131,13 @@ Fewer than three shares fail (a quorum is required).  Online — record the resu
 
    python manage.py import-signed --cert acme.pem --profile tenant-ca --tenant acme
 
-The chain links automatically (the request carried the root's AuthorityKey
-Identifier).  Verify the parent is the root and the profile is ``tenant-ca`` in
-the admin.  The customer's order can now be approved; ``fulfill_order`` reuses the
-pre-provisioned tenant CA (it no longer issues one itself when the root is
-offline) and signs the leaves with the tenant CA key.
+The importer verifies the signature against the expected parent (the root),
+the tenant key (KMS or on-disk), the CA/pathLen profile, and the serial before
+recording anything.  The chain links explicitly; verify the parent is the root
+and the profile is ``tenant-ca`` in the admin.  The customer's order can now be
+approved; ``fulfill_order`` reuses the pre-provisioned tenant CA (it no longer
+issues one itself when the root is offline) and signs the leaves with the
+tenant CA key.
 
 Ceremony C — root-delegated revocation responder (one-time, then rotate)
 ------------------------------------------------------------------------
@@ -148,7 +151,7 @@ exist before any ``publish``.
    python manage.py request-root-responder --out resp.req.der
    openatsc3-pki sign-request --request resp.req.der \
        --shares custody/shares/share-1 custody/shares/share-3 custody/shares/share-5 \
-       --out resp.pem
+       --issuer ca/root/root.cert.pem --out resp.pem
    python manage.py import-signed --cert resp.pem \
        --profile ocsp-responder --responder
 
@@ -173,10 +176,12 @@ reconstructs the key on the air-gapped host and re-splits it **in memory** —
 .. code-block:: bash
 
    # self-check first (reconstructs a valid key, writes nothing)
-   openatsc3-pki quorum-verify --shares <3 shares>
+   openatsc3-pki quorum-verify --shares <3 shares> \
+       --expect-cert ca/root/root.cert.pem
 
    openatsc3-pki quorum-reshare --shares <3 shares> \
-       --threshold 3 --shares-out 5 --out-dir custody/new-shares
+       --threshold 3 --shares-out 5 --out-dir custody/new-shares \
+       --expect-cert ca/root/root.cert.pem
    # self-check runs and aborts (nothing written) if the shares are < threshold
 
 Then destroy the superseded shares.  Treat the reconstruction as a full

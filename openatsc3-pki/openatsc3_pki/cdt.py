@@ -37,6 +37,13 @@ _SIGNING_TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 #: PT20H); A/360 5.2.2.2 @OCSPRefresh.
 DEFAULT_OCSP_REFRESH = _dt.timedelta(hours=20)
 
+#: The exact ToBeSignedData element, including tags, for signature verification.
+_TOBESIGNED = re.compile(
+    rb"^[ \t]*<(?:[A-Za-z_][\w.-]*:)?ToBeSignedData\b[^>]*>"
+    rb".*?"
+    rb"</(?:[A-Za-z_][\w.-]*:)?ToBeSignedData\s*>",
+    re.MULTILINE | re.DOTALL)
+
 
 def _b64_lines(der: bytes) -> str:
     """MIME base64 (64-char lines), matching the published CDT example."""
@@ -267,6 +274,10 @@ def parse_certification_data(xml_or_gzip: bytes) -> CertificationData:
     raw = xml_or_gzip
     if raw[:2] == b"\x1f\x8b":
         raw = gzip.decompress(raw)
+    if b"<!DOCTYPE" in raw.upper() or b"<!ENTITY" in raw.upper():
+        raise ValueError("CertificationData must not contain a DTD or entity")
+    match = _TOBESIGNED.search(raw)
+    tobesigned = match.group(0) if match is not None else b""
     import xml.etree.ElementTree as ET
     root = ET.fromstring(raw)
 
@@ -312,7 +323,7 @@ def parse_certification_data(xml_or_gzip: bytes) -> CertificationData:
     return CertificationData(
         certificates=tuple(certificates), current_cert=current,
         cmssigneddata=cms_blob, ocsp_responses=tuple(ocsps),
-        ocsp_refresh=refresh, tobesigned=b"", next_cert=next_cert,
+        ocsp_refresh=refresh, tobesigned=tobesigned, next_cert=next_cert,
         next_cert_from=next_from, current_cert_until=current_until)
 
 
