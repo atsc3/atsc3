@@ -177,6 +177,74 @@ class KmsSigner:
         return f"KmsSigner(key_id={self._key_id!r}, curve={self._curve!r})"
 
 
+class EnvelopeSigner:
+    """A signer whose private key is stored encrypted under a KMS CMK.
+
+    This is the low-cost leaf-key backend: the private key is generated as a
+    KMS data key pair (or by the caller), stored as ciphertext, and decrypted in
+    process only while signing.  The tenant CA key stays a non-exportable KMS
+    asymmetric key; only leaf keys use this backend.
+    """
+
+    def __init__(self, ciphertext: bytes, wrapping_key_id: str, client,
+                 public_key_der: bytes, *, curve: Optional[str] = None,
+                 encryption_context: Optional[dict] = None) -> None:
+        self._ciphertext = ciphertext
+        self._wrapping_key_id = wrapping_key_id
+        self._client = client
+        self._public = serialization.load_der_public_key(public_key_der)
+        if not isinstance(self._public, ec.EllipticCurvePublicKey):
+            raise ValueError("wrapped leaf keys must be EC keys")
+        self._curve = curve or self._public.curve.name
+        self._encryption_context = encryption_context
+
+    @classmethod
+    def for_wrapped(cls, ciphertext: bytes, wrapping_key_id: str,
+                    public_key_der: bytes, *, region: Optional[str] = None,
+                    client=None, curve: Optional[str] = None,
+                    encryption_context: Optional[dict] = None) -> "EnvelopeSigner":
+        if client is None:
+            import boto3
+            client = boto3.client("kms", region_name=region)
+        return cls(ciphertext, wrapping_key_id, client, public_key_der,
+                   curve=curve, encryption_context=encryption_context)
+
+    @property
+    def wrapping_key_id(self) -> str:
+        return self._wrapping_key_id
+
+    @property
+    def public(self) -> ec.EllipticCurvePublicKey:
+        return self._public
+
+    @property
+    def curve(self) -> str:
+        return self._curve
+
+    def sign(self, data: bytes, hash_name: str) -> bytes:
+        expected = hash_for_curve(self.curve)
+        if expected != hash_name:
+            raise ValueError(
+                f"wrapped {self.curve} key must sign with {expected}, not {hash_name}")
+        kwargs = {"KeyId": self._wrapping_key_id,
+                  "CiphertextBlob": self._ciphertext}
+        if self._encryption_context:
+            kwargs["EncryptionContext"] = self._encryption_context
+        response = self._client.decrypt(**kwargs)
+        private = serialization.load_der_private_key(
+            response["Plaintext"], password=None)
+        if not isinstance(private, ec.EllipticCurvePrivateKey):
+            raise ValueError("wrapped key is not an ECDSA private key")
+        if private.curve.name != self.curve:
+            raise ValueError("wrapped key curve does not match the certificate key")
+        signature = private.sign(data, ec.ECDSA(HASH_ALGORITHMS[hash_name]()))
+        del private
+        return signature
+
+    def __repr__(self) -> str:
+        return f"EnvelopeSigner(wrapping_key_id={self._wrapping_key_id!r}, curve={self._curve!r})"
+
+
 def as_signer(obj) -> Signer:
     """Coerce a :class:`~openatsc3_pki.keys.KeyPair` or :class:`Signer`.
 

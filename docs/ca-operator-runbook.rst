@@ -63,6 +63,47 @@ to touch a local root key and instead point at this ceremony:
 
    export OPENATSC3_CA_ROOT_OFFLINE=1
 
+Key custody tiers
+-----------------
+
+The tenant CA key is always a non-exportable KMS asymmetric key in production.
+Leaf keys have two tiers, selected per tenant (``Tenant.custody``, copied from
+``Order.custody`` on fulfillment):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 18 42 40
+
+   * - Tier
+     - Leaf key
+     - Use
+   * - ``premium``
+     - One KMS asymmetric key per leaf; the app signs with ``kms:Sign`` and the
+       key never leaves KMS.
+     - Customers with audit/compliance custody requirements.
+   * - ``standard``
+     - An EC data key pair wrapped by a per-tenant symmetric KMS CMK; the app
+       stores the ciphertext and decrypts it in memory only while signing.
+     - Default; lower cost, same certificates and revocation.
+   * - ``local``
+     - 0600 file under the CA tree.
+     - Tests/development only.
+
+Set ``OPENATSC3_CA_KEY_BACKEND=aws`` on the online host (Terraform sets this for
+the deployed service).  The app creates the tenant wrapping CMK and premium
+leaf keys with aliases under ``alias/openatsc3-ca/``; the task role needs the KMS
+permissions in ``deploy/terraform/modules/iam``.  The tenant CA key is still
+created by the operator at Ceremony B and must carry an alias under the same
+prefix so the task role can use it.
+
+The standard tier never puts leaf private keys in the clear on disk or in the
+database: the database stores only the KMS ciphertext, its CMK ARN, and the
+public SPKI.  A database copy alone cannot sign without ``kms:Decrypt``.
+
+Existing tenant CA KMS keys must also have an alias under
+``alias/openatsc3-ca/`` (for example ``alias/openatsc3-ca/acme/tenant-ca``) so
+the task role's ``kms:ResourceAliases`` condition can use them.
+
 Ceremony A — root generation and 3-of-5 split (one-time)
 --------------------------------------------------------
 
@@ -111,8 +152,12 @@ Online — create the subject key and the request:
 .. code-block:: bash
 
    # tenant CA key in KMS (recommended) ...
-   aws kms create-key --key-spec ECC_NIST_P384 --key-usage SIGN_VERIFY
-   python manage.py request-tenant-ca --tenant acme --kms-key-id <arn> \
+   key_id=$(aws kms create-key --key-spec ECC_NIST_P384 --key-usage SIGN_VERIFY \
+       --tags TagKey=Project,TagValue=openatsc3-ca \
+       --query KeyMetadata.KeyId --output text)
+   aws kms create-alias --alias-name alias/openatsc3-ca/acme/tenant-ca \
+       --target-key-id "$key_id"
+   python manage.py request-tenant-ca --tenant acme --kms-key-id "$key_id" \
        --out acme.req.der
    # ... or a local key under tenants/acme/ when KMS is not used
    python manage.py request-tenant-ca --tenant acme --out acme.req.der
@@ -137,7 +182,9 @@ recording anything.  The chain links explicitly; verify the parent is the root
 and the profile is ``tenant-ca`` in the admin.  The customer's order can now be
 approved; ``fulfill_order`` reuses the pre-provisioned tenant CA (it no longer
 issues one itself when the root is offline) and signs the leaves with the
-tenant CA key.
+tenant CA key.  Set ``Order.custody`` (or ``Tenant.custody``) before approval:
+``standard`` wraps leaves under the tenant CMK; ``premium`` creates one KMS key
+per leaf.  Existing certificates keep the custody they were issued with.
 
 Ceremony C — root-delegated revocation responder (one-time, then rotate)
 ------------------------------------------------------------------------

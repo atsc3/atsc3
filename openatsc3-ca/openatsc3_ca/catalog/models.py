@@ -1,9 +1,10 @@
 """The certificate-lifecycle ledger (PostgreSQL is the source of truth).
 
-These models hold **no cryptography**: they record what ``openatsc3_pki``
-issued and what the operator decided.  The DER/PEM/key bytes live on disk (keys
-are 0600) and are referenced by path + SHA-256; ``export`` materializes the PEM
-tree the receiver/signer read.
+These models hold **no plaintext cryptography**: they record what
+``openatsc3_pki`` issued and what the operator decided.  DER/PEM artifacts live
+on disk (keys are 0600) and are referenced by path + SHA-256; the standard key
+tier stores only KMS ciphertext (never a plaintext private key) in the ledger,
+and ``export`` materializes the PEM tree the receiver/signer read.
 
 Spec sources are named per field.  Constraints that the standard states
 positively (A/360 5.2.2.2, 5.2.2.6) are enforced in ``clean()`` *and* as
@@ -17,7 +18,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
-from .constants import CertStatus, OrderStatus, Profile, RolloverState
+from .constants import CertStatus, KeyCustody, OrderStatus, Profile, RolloverState
 
 
 class Tenant(models.Model):
@@ -33,6 +34,12 @@ class Tenant(models.Model):
     slug = models.SlugField(max_length=128, unique=True)
     organization = models.CharField(max_length=255, blank=True)
     active = models.BooleanField(default=True)
+    #: Key custody tier for this tenant's leaves (tenant CA is always KMS in prod).
+    custody = models.CharField(
+        max_length=16, choices=KeyCustody.TENANT_CHOICES,
+        default=KeyCustody.STANDARD)
+    #: Per-tenant symmetric KMS CMK that wraps standard-tier leaf keys.
+    wrapping_key_id = models.CharField(max_length=2048, blank=True)
     #: Bearer token for the customer-facing API (blank = API access disabled).
     api_token = models.CharField(max_length=64, blank=True, db_index=True)
     #: Optional expiry for ``api_token`` (null = no expiry).
@@ -118,6 +125,13 @@ class Certificate(models.Model):
     key_sha256 = models.CharField(max_length=64, blank=True)
     #: KMS asymmetric key id/ARN when the key is held by KMS (no key file).
     kms_key_id = models.CharField(max_length=2048, blank=True)
+    #: Custody tier for this certificate's key.
+    custody = models.CharField(
+        max_length=16, choices=KeyCustody.CERT_CHOICES, blank=True)
+    #: Standard tier: base64 KMS ciphertext, its CMK, and the public SPKI.
+    wrapped_key = models.TextField(blank=True)
+    wrapping_key_id = models.CharField(max_length=2048, blank=True)
+    wrapped_public_key = models.TextField(blank=True)
 
     status = models.CharField(
         max_length=16, choices=CertStatus.CHOICES, default=CertStatus.GOOD,
@@ -321,6 +335,10 @@ class Order(models.Model):
 
     amount_cents = models.IntegerField(default=0)
     currency = models.CharField(max_length=8, default="usd")
+    #: Custody tier the customer bought (applied to the tenant on fulfillment).
+    custody = models.CharField(
+        max_length=16, choices=KeyCustody.TENANT_CHOICES,
+        default=KeyCustody.STANDARD)
     status = models.CharField(max_length=16, choices=OrderStatus.CHOICES,
                               default=OrderStatus.PENDING, db_index=True)
 

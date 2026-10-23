@@ -37,9 +37,11 @@ from cryptography import x509 as _x509
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from cryptography.x509.oid import ExtendedKeyUsageOID, ExtensionOID, NameOID
 
+from . import custody as key_custody
 from .constants import (
     OCSP_REFRESH_DEFAULT,
     CertStatus,
+    KeyCustody,
     OrderStatus,
     Profile,
     RolloverState,
@@ -156,6 +158,8 @@ def _ensure_serial_available(serial: str, der: bytes) -> None:
 
 def record_certificate(cert: X509Certificate, profile: str, *,
                        key_path: str = "", kms_key_id: str = "",
+                       custody: str = "", wrapped_key: str = "",
+                       wrapping_key_id: str = "", wrapped_public_key: str = "",
                        broadcaster: Optional[Broadcaster] = None,
                        tenant: Optional[Tenant] = None,
                        parent: Optional[Certificate] = None,
@@ -204,6 +208,10 @@ def record_certificate(cert: X509Certificate, profile: str, *,
         "key_path": key_path,
         "key_sha256": sha256_file(key_path) if key_path else "",
         "kms_key_id": kms_key_id,
+        "custody": custody,
+        "wrapped_key": wrapped_key,
+        "wrapping_key_id": wrapping_key_id,
+        "wrapped_public_key": wrapped_public_key,
         "broadcaster": broadcaster,
         "tenant": tenant,
     }
@@ -276,10 +284,10 @@ def _tenant_ca_signer(tenant: Tenant):
 
 
 def _cert_signer(cert: Certificate):
-    """A certificate's signing key: a KMS backend or the on-disk key file."""
-    if cert.kms_key_id:
-        from openatsc3_pki.signer import KmsSigner
-        return KmsSigner.for_key(cert.kms_key_id)
+    """A certificate's signing key: wrapped, KMS, or the on-disk key file."""
+    signer = key_custody.signer_for_certificate(cert)
+    if signer is not None:
+        return signer
     return pki_keys.load_private(cert.key_path)
 
 
@@ -335,8 +343,10 @@ def issue_tenant_ca(tenant: Tenant, *, common_name: Optional[str] = None,
                                      days=days, key=signer)
     key_path = "" if signer is not None else authority.tenant_key_path(tenant.slug)
     with transaction.atomic():
-        result = record_certificate(cert, Profile.TENANT_CA, tenant=tenant,
-                                    key_path=key_path, kms_key_id=kms_key_id)
+        result = record_certificate(
+            cert, Profile.TENANT_CA, tenant=tenant, key_path=key_path,
+            kms_key_id=kms_key_id,
+            custody=(KeyCustody.PREMIUM if kms_key_id else KeyCustody.LOCAL))
         audit("issue-tenant-ca", actor=actor, target=result.certificate,
               detail={"tenant": tenant.slug, "cn": common_name})
     return result.certificate
@@ -367,7 +377,26 @@ def _issue_leaf(profile: str, action: str, label: str, name: str,
         broadcaster.save(update_fields=["bsids"])
     authority = _authority()
     tenant_slug = tenant.slug if tenant is not None else None
-    signer = _signer_for(key, kms_key_id)
+    material = None
+    if (key is None and not kms_key_id and tenant is not None
+            and key_custody.enabled()):
+        material = key_custody.create_leaf_key(
+            tenant, profile=profile, label=label,
+            curve=pki_keys.SIGNER_CURVE)
+        signer = material.signer
+        kms_key_id = material.kms_key_id
+        custody = material.custody
+        wrapped_key = material.wrapped_key
+        wrapping_key_id = material.wrapping_key_id
+        wrapped_public_key = material.wrapped_public_key
+    else:
+        signer = _signer_for(key, kms_key_id)
+        if not kms_key_id and signer is not None:
+            kms_key_id = getattr(signer, "key_id", "")
+        custody = KeyCustody.PREMIUM if kms_key_id else KeyCustody.LOCAL
+        wrapped_key = ""
+        wrapping_key_id = ""
+        wrapped_public_key = ""
     ca_key = _tenant_ca_signer(tenant) if tenant is not None else None
     cert = authority.issue_broadcaster(name, bsids, common_name=common_name,
                                        days=days, tenant=tenant_slug,
@@ -376,11 +405,15 @@ def _issue_leaf(profile: str, action: str, label: str, name: str,
                 os.path.join(authority.broadcaster_dir(name, tenant_slug),
                              f"{label}.key.pem"))
     with transaction.atomic():
-        result = record_certificate(cert, profile, key_path=key_path,
-                                    kms_key_id=kms_key_id,
-                                    broadcaster=broadcaster, tenant=tenant)
+        result = record_certificate(
+            cert, profile, key_path=key_path, kms_key_id=kms_key_id,
+            custody=custody, wrapped_key=wrapped_key,
+            wrapping_key_id=wrapping_key_id,
+            wrapped_public_key=wrapped_public_key,
+            broadcaster=broadcaster, tenant=tenant)
         audit(action, actor=actor, target=result.certificate,
-              detail={"name": name, "bsids": list(bsids), "tenant": tenant_slug})
+              detail={"name": name, "bsids": list(bsids), "tenant": tenant_slug,
+                      "custody": custody})
     return result.certificate
 
 
@@ -430,12 +463,31 @@ def issue_ocsp_responder(*, tenant: Optional[Tenant] = None,
         responder_dir = Path(authority.tenant_dir(tenant.slug))
     signer = _signer_for(key, kms_key_id)
     key_path = responder_dir / "ocsp-responder.key.pem"
-    if signer is None:
+    material = None
+    if (key is None and not kms_key_id and tenant is not None
+            and key_custody.enabled()):
+        material = key_custody.create_leaf_key(
+            tenant, profile=Profile.OCSP_RESPONDER, label="ocsp-responder",
+            curve=pki_keys.SIGNER_CURVE)
+        signer = material.signer
+        kms_key_id = material.kms_key_id
+        custody = material.custody
+        wrapped_key = material.wrapped_key
+        wrapping_key_id = material.wrapping_key_id
+        wrapped_public_key = material.wrapped_public_key
+        key_path_str = ""
+    elif signer is None:
         signer = pki_keys.generate(pki_keys.SIGNER_CURVE)
         pki_keys.write_private(str(key_path), signer)
         key_path_str = str(key_path)
+        custody = KeyCustody.LOCAL
+        wrapped_key = wrapping_key_id = wrapped_public_key = ""
     else:
         key_path_str = ""
+        if not kms_key_id and signer is not None:
+            kms_key_id = getattr(signer, "key_id", "")
+        custody = KeyCustody.PREMIUM if kms_key_id else KeyCustody.LOCAL
+        wrapped_key = wrapping_key_id = wrapped_public_key = ""
     subject = SubjectInfo(
         common_name=common_name,
         organizational_unit="ATSC OCSP Responder",
@@ -444,8 +496,11 @@ def issue_ocsp_responder(*, tenant: Optional[Tenant] = None,
     cert = pki_x509.issue_ocsp_responder(subject, signer, issuing, issuing_key,
                                          days=days)
     with transaction.atomic():
-        result = record_certificate(cert, Profile.OCSP_RESPONDER, tenant=tenant,
-                                    key_path=key_path_str, kms_key_id=kms_key_id)
+        result = record_certificate(
+            cert, Profile.OCSP_RESPONDER, tenant=tenant,
+            key_path=key_path_str, kms_key_id=kms_key_id, custody=custody,
+            wrapped_key=wrapped_key, wrapping_key_id=wrapping_key_id,
+            wrapped_public_key=wrapped_public_key)
         responder = OcspResponder.objects.create(
             common_name=common_name, certificate=result.certificate,
             key_path=key_path_str,
@@ -453,7 +508,8 @@ def issue_ocsp_responder(*, tenant: Optional[Tenant] = None,
             active=True)
         audit("issue-ocsp-responder", actor=actor, target=responder,
               detail={"cn": common_name,
-                      "tenant": tenant.slug if tenant is not None else None})
+                      "tenant": tenant.slug if tenant is not None else None,
+                      "custody": custody})
     return responder
 
 
@@ -729,10 +785,11 @@ def import_signed_certificate(data: bytes, profile: str, *,
     if not key_path:
         key_path = "" if kms_key_id else _local_key_path(profile, tenant)
     key_sha = sha256_file(key_path) if key_path and os.path.exists(key_path) else ""
+    custody = KeyCustody.PREMIUM if kms_key_id else KeyCustody.LOCAL
     with transaction.atomic():
         result = record_certificate(cert, profile, parent=parent, tenant=tenant,
                                     broadcaster=broadcaster, key_path=key_path,
-                                    kms_key_id=kms_key_id)
+                                    kms_key_id=kms_key_id, custody=custody)
         out = _local_cert_path(profile, tenant)
         if out:
             _write_cert_pem(result.certificate, Path(out))
@@ -1086,7 +1143,8 @@ def _ensure_order_tenant(order: Order) -> Tenant:
     name = order.organization or order.email or _order_slug(order)
     tenant, _ = Tenant.objects.get_or_create(
         slug=_order_slug(order),
-        defaults={"name": name[:128], "organization": order.organization})
+        defaults={"name": name[:128], "organization": order.organization,
+                  "custody": order.custody})
     return tenant
 
 
@@ -1105,6 +1163,9 @@ def fulfill_order(order: Order, *, deliverer=None, actor: str = "system",
         expires_in = getattr(settings, "OPENATSC3_CA_DELIVERY_TTL", 3600)
 
     tenant = _ensure_order_tenant(order)
+    if tenant.custody != order.custody:
+        tenant.custody = order.custody
+        tenant.save(update_fields=["custody"])
     if _tenant_ca_cert(tenant) is None:
         if root_is_offline():
             raise ValueError(

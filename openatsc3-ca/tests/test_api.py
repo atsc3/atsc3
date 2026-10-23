@@ -46,6 +46,7 @@ def test_api_lists_tenant_and_certificates(ca):
 
     info = client.get("/api/v1/tenant/", **_auth("tok-acme")).json()
     assert info["slug"] == "acme"
+    assert info["custody"] == "standard"
     assert "ACME-TV" in info["broadcasters"]
 
     certs = client.get("/api/v1/certificates/", **_auth("tok-acme")).json()

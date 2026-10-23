@@ -55,6 +55,29 @@ class CertStatus:
     ]
 
 
+class KeyCustody:
+    """How a certificate's private key is held.
+
+    ``STANDARD`` wraps leaf keys under a per-tenant KMS CMK (the low-cost tier);
+    ``PREMIUM`` keeps every leaf in a non-exportable KMS asymmetric key;
+    ``LOCAL`` is the test/local development fallback only.
+    """
+
+    STANDARD = "standard"
+    PREMIUM = "premium"
+    LOCAL = "local"
+
+    TENANT_CHOICES = [
+        (STANDARD, "Standard (wrapped leaf keys)"),
+        (PREMIUM, "Premium (KMS key per leaf)"),
+    ]
+    CERT_CHOICES = [
+        (STANDARD, "Standard (wrapped leaf key)"),
+        (PREMIUM, "Premium (KMS key)"),
+        (LOCAL, "Local development key"),
+    ]
+
+
 class RolloverState:
     """State of a key-replacement plan (A/360 5.2.2.2 CertReplacement)."""
 

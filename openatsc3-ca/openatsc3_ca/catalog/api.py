@@ -92,6 +92,7 @@ def tenant_info(request):
         "slug": tenant.slug,
         "name": tenant.name,
         "organization": tenant.organization,
+        "custody": tenant.custody,
         "broadcasters": broadcasters,
     })
 
@@ -112,6 +113,7 @@ def _cert_json(cert: Certificate) -> dict:
         "serial": cert.serial,
         "common_name": cert.common_name,
         "profile": cert.profile,
+        "custody": cert.custody,
         "status": cert.status,
         "not_after": cert.not_after.isoformat(),
         "broadcaster": cert.broadcaster.name if cert.broadcaster_id else None,

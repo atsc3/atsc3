@@ -107,6 +107,32 @@ def test_kms_for_key_accepts_injected_client():
     assert s.curve == "secp256r1"
 
 
+class FakeEnvelopeClient:
+    def __init__(self, private):
+        self._private = private
+
+    def decrypt(self, KeyId, CiphertextBlob, EncryptionContext=None):
+        return {"Plaintext": self._private.private.private_bytes(
+            serialization.Encoding.DER,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption())}
+
+
+def test_envelope_signer_signs_with_the_wrapped_key():
+    private = keys.generate("secp256r1")
+    client = FakeEnvelopeClient(private)
+    public_der = private.public.public_bytes(
+        serialization.Encoding.DER,
+        serialization.PublicFormat.SubjectPublicKeyInfo)
+    s = signer.EnvelopeSigner(
+        b"ciphertext", "arn:aws:kms:...:key/wrap", client, public_der)
+    assert s.curve == "secp256r1"
+    message = b"a signaling message"
+    signature = s.sign(message, "sha256")
+    private.public.verify(signature, message, ec.ECDSA(hashes.SHA256()))
+    assert "ciphertext" not in repr(s)
+
+
 def test_kms_signed_ocsp_and_revocation():
     now = _now()
     root_signer = kms(keys.ROOT_CURVE)

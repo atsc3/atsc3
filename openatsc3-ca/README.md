@@ -19,9 +19,12 @@ protection use our own root and our own DRM scheme.
 ## Design
 
 - **PostgreSQL is the source of truth** for certificate lifecycle state.
-- **Private keys stay on disk (0600)**, referenced by path + SHA-256; the
-  database never holds key bytes.  A key may instead be a non-exportable **AWS
-  KMS** asymmetric key, referenced by `kms_key_id` (install the `[kms]` extra).
+- **Private keys have two custody tiers.** The tenant CA key is always a
+  non-exportable **AWS KMS** asymmetric key in production. Leaf keys are either
+  **premium** (one non-exportable KMS asymmetric key per leaf, `kms:Sign`) or
+  **standard** (an EC data key pair wrapped under a per-tenant symmetric KMS
+  CMK, stored encrypted and decrypted only while signing). Local 0600 keys are
+  the test/development fallback. See “Key custody tiers” below.
 - **Per-tenant intermediate CAs**: the offline root signs one intermediate per
   customer (`tenants/<slug>/…`); each intermediate signs that customer's leaves,
   so revoking it disables only that customer.
@@ -95,11 +98,41 @@ python manage.py audit
 Models: `Tenant`, `Certificate`, `Broadcaster`, `Order`, `OcspResponse`,
 `OcspResponder`, `RolloverPlan` (the window constraint is already enforced),
 `PublishedSignaling`, `SpecReference`, and an append-only `AuditEvent`.
-`Certificate` records a key either as an on-disk path (+ SHA-256) or as a
-`kms_key_id`; `--kms-key-id` on the issue commands installs a non-exportable
-KMS key (install the `[kms]` extra). Broadcaster names are **scoped per tenant**
-(unique within a tenant, and separately unique in the legacy `tenant=None`
-tree), so two customers may use the same station name.
+`Certificate` records a key as an on-disk path (+ SHA-256), a `kms_key_id`, or a
+standard-tier wrapped key (`wrapped_key` + `wrapping_key_id` +
+`wrapped_public_key`). Broadcaster names are **scoped per tenant** (unique within
+a tenant, and separately unique in the legacy `tenant=None` tree), so two
+customers may use the same station name.
+
+## Key custody tiers
+
+The tenant CA is always a KMS asymmetric key in production. Leaves have two
+tiers, selected per tenant (`Tenant.custody`) and copied to each certificate:
+
+| Tier | Storage | Signing | Intended for |
+|---|---|---|---|
+| `premium` | One KMS asymmetric key per leaf | `kms:Sign`; key never leaves KMS | Audited/commercial tenants, “keys never leave KMS” contracts |
+| `standard` | EC data key pair wrapped by a per-tenant symmetric KMS CMK | `kms:Decrypt` in process, then sign and discard | Price-sensitive/public tenants; the default |
+| `local` | 0600 file under the CA tree | Local `cryptography` key | Tests/development only |
+
+Set the backend explicitly:
+
+```bash
+export OPENATSC3_CA_KEY_BACKEND=aws          # local (default) or aws
+export OPENATSC3_CA_KMS_REGION=us-east-1
+export OPENATSC3_CA_KMS_ALIAS_PREFIX=alias/openatsc3-ca
+pip install -e '.[aws]'                      # boto3 for KMS
+```
+
+With `aws`, the app creates the per-tenant wrapping CMK and the premium leaf
+keys; the tenant CA key is still created by the operator (with an alias under
+`alias/openatsc3-ca/…`) and its certificate comes from the offline-root
+ceremony. An `Order.custody` value is copied to a new tenant on fulfillment, and
+`Tenant.custody` can be changed in the admin for future leaves.
+
+Cost: premium is `2 + 3B` KMS keys per tenant (`B` stations); standard is
+roughly one CMK per tenant (`$1/month`) plus the tenant CA key, with KMS
+`Decrypt` request charges.
 
 ## Sales + delivery (Phase 2)
 

@@ -25,9 +25,11 @@ from .models import (
 
 @admin.register(Tenant)
 class TenantAdmin(admin.ModelAdmin):
-    list_display = ("name", "slug", "organization", "active", "created_at")
+    list_display = ("name", "slug", "organization", "custody", "active",
+                    "created_at")
     search_fields = ("name", "slug", "organization")
-    list_filter = ("active",)
+    list_filter = ("active", "custody")
+    readonly_fields = ("wrapping_key_id", "created_at")
 
 
 @admin.register(Broadcaster)
@@ -39,13 +41,14 @@ class BroadcasterAdmin(admin.ModelAdmin):
 
 @admin.register(Certificate)
 class CertificateAdmin(admin.ModelAdmin):
-    list_display = ("common_name", "profile", "status", "serial",
+    list_display = ("common_name", "profile", "custody", "status", "serial",
                     "not_after", "tenant", "broadcaster")
-    list_filter = ("profile", "status", "tenant", "broadcaster")
+    list_filter = ("profile", "custody", "status", "tenant", "broadcaster")
     search_fields = ("serial", "common_name", "subject_dn", "ski", "aki")
     readonly_fields = ("serial", "ski", "aki", "subject_dn", "der_file",
-                       "key_path", "key_sha256", "kms_key_id", "created_at",
-                       "updated_at")
+                       "key_path", "key_sha256", "kms_key_id", "custody",
+                       "wrapped_key", "wrapping_key_id", "wrapped_public_key",
+                       "created_at", "updated_at")
     actions = ("revoke_certificates",)
 
     @admin.action(description="Revoke selected certificates")
@@ -60,9 +63,9 @@ class CertificateAdmin(admin.ModelAdmin):
 
 @admin.register(Order)
 class OrderAdmin(admin.ModelAdmin):
-    list_display = ("id", "email", "organization", "status", "amount_cents",
-                    "tenant", "fulfilled_at", "created_at")
-    list_filter = ("status", "currency")
+    list_display = ("id", "email", "organization", "custody", "status",
+                    "amount_cents", "tenant", "fulfilled_at", "created_at")
+    list_filter = ("status", "custody", "currency")
     search_fields = ("email", "organization", "stripe_session_id",
                      "stripe_payment_intent")
     readonly_fields = ("stripe_session_id", "stripe_payment_intent", "checkout_url",

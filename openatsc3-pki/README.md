@@ -113,6 +113,9 @@ through `openatsc3_pki.signer.Signer`, so the private key can live anywhere:
 - `KmsSigner` signs with an AWS KMS asymmetric key (`kms:Sign`); the key never
   leaves KMS. `boto3` is imported lazily (`pip install -e '.[kms]'`), so the
   library stays dependency-light and is not locked to AWS.
+- `EnvelopeSigner` is the lower-cost leaf backend: an EC data key pair wrapped
+  by a KMS symmetric CMK; it calls `kms:Decrypt`, signs in process, and discards
+  the private key. The tenant CA key remains a `KmsSigner` in production.
 
 The existing `keys.KeyPair` API is unchanged — any function that took a
 `KeyPair` also accepts a `Signer`, and KMS key specs map to the A/360

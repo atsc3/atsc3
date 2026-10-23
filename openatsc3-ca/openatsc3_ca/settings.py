@@ -151,6 +151,17 @@ SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 OPENATSC3_CA_BASE_DIR = os.environ.get(
     "OPENATSC3_CA_BASE_DIR", str(BASE_DIR / "ca-tree"))
 
+#: Key-custody backend for tenant leaf keys: ``aws`` (premium KMS keys or
+#: standard wrapped data keys) or ``local`` (tests/dev only).
+OPENATSC3_CA_KEY_BACKEND = os.environ.get(
+    "OPENATSC3_CA_KEY_BACKEND", "local").lower()
+OPENATSC3_CA_KMS_REGION = os.environ.get("OPENATSC3_CA_KMS_REGION", "")
+#: Alias prefix used for app-created tenant/leaf KMS keys.
+OPENATSC3_CA_KMS_ALIAS_PREFIX = os.environ.get(
+    "OPENATSC3_CA_KMS_ALIAS_PREFIX", "alias/openatsc3-ca")
+#: Test seam: an injected KMS client object (never set in production).
+OPENATSC3_CA_KMS_CLIENT = None
+
 #: When the root key is held offline (air-gapped quorum), online issuance that
 #: needs the root fails fast and points at the ceremony instead of touching a
 #: local root key.  See the operator runbook (docs/ca-operator-runbook.rst).
